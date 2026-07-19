@@ -1,0 +1,15 @@
+.env
+.agents/
+data/
+model_cache/
+outputs/
+tmp/
+faiss_index/
+__pycache__/
+*.py[cod]
+*.log
+tests/fixtures/test1_expected.json
+tests/fixtures/report_expected.json
+.venv/
+.idea/
+.vscode/

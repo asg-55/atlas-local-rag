@@ -1,0 +1,4 @@
+{$DOMAIN:localhost} {
+    encode zstd gzip
+    reverse_proxy assistant:8501
+}
