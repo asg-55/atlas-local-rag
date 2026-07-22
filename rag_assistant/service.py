@@ -79,7 +79,7 @@ class AssistantService:
             embeddings = embed_passages([row["content"] for row in rows], self.settings.embedding_model)
             self.db.set_embeddings(chunk_ids, embeddings[: len(chunk_ids)])
             self.db.finish_document(doc_id, len(chunk_ids))
-            self.index.rebuild()
+            self.index.sync()
             return {"status": "ready", "document_id": doc_id, "chunks": len(chunk_ids)}
         except Exception as exc:
             self.db.fail_document(doc_id, str(exc))

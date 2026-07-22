@@ -28,6 +28,7 @@ COPY app.py ./
 COPY .streamlit ./.streamlit
 COPY rag_assistant ./rag_assistant
 COPY tests ./tests
+COPY scripts ./scripts
 
 RUN mkdir -p /app/data /models/huggingface /models/easyocr
 

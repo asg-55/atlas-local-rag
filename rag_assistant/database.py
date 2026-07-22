@@ -18,6 +18,7 @@ def utc_now() -> str:
 class Database:
     def __init__(self, path: Path):
         self.path = path
+        self._fts_available = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
@@ -130,6 +131,45 @@ class Database:
                 );
                 """
             )
+            self._initialize_fts(conn)
+
+    def _initialize_fts(self, conn: sqlite3.Connection) -> None:
+        """Create a disk-backed lexical index, while keeping older SQLite builds usable."""
+        try:
+            conn.executescript(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+                    content,
+                    content='chunks',
+                    content_rowid='id',
+                    tokenize='unicode61 remove_diacritics 2'
+                );
+                CREATE TRIGGER IF NOT EXISTS chunks_fts_insert AFTER INSERT ON chunks BEGIN
+                    INSERT INTO chunks_fts(rowid, content) VALUES (new.id, new.content);
+                END;
+                CREATE TRIGGER IF NOT EXISTS chunks_fts_delete AFTER DELETE ON chunks BEGIN
+                    INSERT INTO chunks_fts(chunks_fts, rowid, content)
+                    VALUES ('delete', old.id, old.content);
+                END;
+                CREATE TRIGGER IF NOT EXISTS chunks_fts_update AFTER UPDATE OF content ON chunks BEGIN
+                    INSERT INTO chunks_fts(chunks_fts, rowid, content)
+                    VALUES ('delete', old.id, old.content);
+                    INSERT INTO chunks_fts(rowid, content) VALUES (new.id, new.content);
+                END;
+                """
+            )
+            initialized = conn.execute(
+                "SELECT value FROM app_meta WHERE key='fts_schema_version'"
+            ).fetchone()
+            if not initialized or initialized[0] != "1":
+                conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+                conn.execute(
+                    """INSERT INTO app_meta(key, value) VALUES ('fts_schema_version', '1')
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value"""
+                )
+            self._fts_available = True
+        except sqlite3.OperationalError:
+            self._fts_available = False
 
     def find_document_by_hash(self, sha256: str):
         with self.connect() as conn:
@@ -222,6 +262,67 @@ class Database:
         query += " ORDER BY c.id"
         with self.connect() as conn:
             return conn.execute(query).fetchall()
+
+    def chunk_count(self) -> int:
+        with self.connect() as conn:
+            return int(
+                conn.execute(
+                    """SELECT COUNT(*) FROM chunks c
+                    JOIN documents d ON d.id=c.document_id
+                    WHERE d.status='ready'"""
+                ).fetchone()[0]
+            )
+
+    def embedded_chunks_after(self, chunk_id: int):
+        with self.connect() as conn:
+            return conn.execute(
+                """SELECT c.id, c.embedding FROM chunks c
+                JOIN documents d ON d.id=c.document_id
+                WHERE d.status='ready' AND c.embedding IS NOT NULL AND c.id>?
+                ORDER BY c.id""",
+                (chunk_id,),
+            ).fetchall()
+
+    def embedded_count_through(self, chunk_id: int) -> int:
+        with self.connect() as conn:
+            return int(
+                conn.execute(
+                    """SELECT COUNT(*) FROM chunks c
+                    JOIN documents d ON d.id=c.document_id
+                    WHERE d.status='ready' AND c.embedding IS NOT NULL AND c.id<=?""",
+                    (chunk_id,),
+                ).fetchone()[0]
+            )
+
+    def fts_available(self) -> bool:
+        return self._fts_available
+
+    def lexical_search_fts(
+        self,
+        tokens: Sequence[str],
+        k: int,
+        document_id: str | None = None,
+    ) -> list[tuple[int, float]]:
+        if not self._fts_available or not tokens or k <= 0:
+            return []
+        unique_tokens = list(dict.fromkeys(token for token in tokens if token))
+        match_query = " OR ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in unique_tokens)
+        document_filter = " AND c.document_id=?" if document_id else ""
+        params: list = [match_query]
+        if document_id:
+            params.append(document_id)
+        params.append(k)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""SELECT c.id, bm25(chunks_fts) AS rank
+                FROM chunks_fts
+                JOIN chunks c ON c.id=chunks_fts.rowid
+                JOIN documents d ON d.id=c.document_id
+                WHERE chunks_fts MATCH ? AND d.status='ready'{document_filter}
+                ORDER BY rank LIMIT ?""",
+                params,
+            ).fetchall()
+        return [(int(row["id"]), -float(row["rank"])) for row in rows]
 
     def chunks_by_ids(self, ids: Sequence[int]) -> dict[int, Chunk]:
         if not ids:

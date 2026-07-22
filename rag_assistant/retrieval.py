@@ -29,10 +29,46 @@ class HybridRetriever:
         self._lexical_generation = -1
         self._lexical_ids: list[int] = []
         self._bm25: BM25Okapi | None = None
+        self._corpus_size = 0
+
+    @staticmethod
+    def _search_scale(corpus_size: int) -> int:
+        if corpus_size <= 10_000:
+            return 1
+        if corpus_size <= 50_000:
+            return 2
+        return 3
+
+    def profile(self) -> dict:
+        corpus_size = self.db.chunk_count()
+        scale = self._search_scale(corpus_size)
+        use_fts = corpus_size > self.settings.bm25_memory_threshold and self.db.fts_available()
+        return {
+            "chunks": corpus_size,
+            "lexical_backend": "SQLite FTS5" if use_fts else "BM25 в памяти",
+            "dense_candidates": min(
+                self.settings.max_search_candidates,
+                self.settings.dense_candidates * scale,
+            ),
+            "lexical_candidates": min(
+                self.settings.max_search_candidates,
+                self.settings.lexical_candidates * scale,
+            ),
+            "rerank_candidates": min(
+                self.settings.max_rerank_candidates,
+                max(50, 40 * scale),
+            ),
+        }
 
     def _ensure_lexical(self) -> None:
         generation = self.db.generation()
         if self._lexical_generation == generation:
+            return
+        self._corpus_size = self.db.chunk_count()
+        if self._corpus_size > self.settings.bm25_memory_threshold and self.db.fts_available():
+            self._lexical_ids = []
+            self._bm25 = None
+            self._lexical_generation = generation
             return
         rows = self.db.all_chunks()
         self._lexical_ids = [int(row["id"]) for row in rows]
@@ -40,11 +76,20 @@ class HybridRetriever:
         self._bm25 = BM25Okapi(corpus) if corpus else None
         self._lexical_generation = generation
 
-    def _lexical_search(self, query: str, k: int, allowed_ids: set[int] | None = None) -> list[tuple[int, float]]:
+    def _lexical_search(
+        self,
+        query: str,
+        k: int,
+        allowed_ids: set[int] | None = None,
+        document_id: str | None = None,
+    ) -> list[tuple[int, float]]:
         self._ensure_lexical()
+        tokens = tokenize(query)
+        if self._corpus_size > self.settings.bm25_memory_threshold and self.db.fts_available():
+            return self.db.lexical_search_fts(tokens, k, document_id=document_id)
         if not self._bm25 or not self._lexical_ids:
             return []
-        scores = np.asarray(self._bm25.get_scores(tokenize(query)), dtype="float32")
+        scores = np.asarray(self._bm25.get_scores(tokens), dtype="float32")
         if not np.any(scores > 0):
             return []
         eligible = np.arange(len(scores))
@@ -70,6 +115,8 @@ class HybridRetriever:
         include_all: bool = False,
     ) -> list[SearchResult]:
         final_k = final_k or self.settings.final_chunks
+        corpus_size = self.db.chunk_count()
+        search_scale = self._search_scale(corpus_size)
         allowed_ids = None
         if document_id:
             document_chunks = self.db.chunks_for_document(document_id)
@@ -77,12 +124,25 @@ class HybridRetriever:
                 return [SearchResult(chunk=chunk, score=1.0) for chunk in document_chunks[:final_k]]
             allowed_ids = {chunk.id for chunk in document_chunks}
         vector = embed_query(query, self.settings.embedding_model)
-        dense_k = max(self.settings.dense_candidates, 160) if allowed_ids is not None else self.settings.dense_candidates
+        adaptive_dense = min(
+            self.settings.max_search_candidates,
+            self.settings.dense_candidates * search_scale,
+        )
+        dense_k = max(adaptive_dense, 160) if allowed_ids is not None else adaptive_dense
         dense = self.index.search(vector, dense_k)
         if allowed_ids is not None:
             dense = [(chunk_id, score) for chunk_id, score in dense if chunk_id in allowed_ids]
-        lexical_k = max(self.settings.lexical_candidates, 160) if allowed_ids is not None else self.settings.lexical_candidates
-        lexical = self._lexical_search(query, lexical_k, allowed_ids=allowed_ids)
+        adaptive_lexical = min(
+            self.settings.max_search_candidates,
+            self.settings.lexical_candidates * search_scale,
+        )
+        lexical_k = max(adaptive_lexical, 160) if allowed_ids is not None else adaptive_lexical
+        lexical = self._lexical_search(
+            query,
+            lexical_k,
+            allowed_ids=allowed_ids,
+            document_id=document_id,
+        )
         fused: dict[int, float] = defaultdict(float)
         dense_scores = dict(dense)
         lexical_scores = dict(lexical)
@@ -90,7 +150,14 @@ class HybridRetriever:
             fused[chunk_id] += 1.0 / (60 + rank)
         for rank, (chunk_id, _) in enumerate(lexical, start=1):
             fused[chunk_id] += 1.0 / (60 + rank)
-        candidate_ids = [item[0] for item in sorted(fused.items(), key=lambda item: item[1], reverse=True)[:50]]
+        rerank_pool = min(
+            self.settings.max_rerank_candidates,
+            max(50, final_k * 4, 40 * search_scale),
+        )
+        candidate_ids = [
+            item[0]
+            for item in sorted(fused.items(), key=lambda item: item[1], reverse=True)[:rerank_pool]
+        ]
         chunks = self.db.chunks_by_ids(candidate_ids)
         candidates = []
         seen_content: set[str] = set()
