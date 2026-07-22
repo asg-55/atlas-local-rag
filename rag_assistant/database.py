@@ -82,6 +82,19 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_conversation
                     ON messages(conversation_id, id);
+                CREATE TABLE IF NOT EXISTS chat_attachments (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                    filename TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    stored_path TEXT NOT NULL,
+                    extracted_text TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(conversation_id, sha256)
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_attachments_conversation
+                    ON chat_attachments(conversation_id, created_at);
                 CREATE TABLE IF NOT EXISTS app_meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -254,6 +267,12 @@ class Database:
                 "SELECT * FROM conversations ORDER BY updated_at DESC"
             ).fetchall()
 
+    def get_conversation(self, conversation_id: str):
+        with self.connect() as conn:
+            return conn.execute(
+                "SELECT * FROM conversations WHERE id=?", (conversation_id,)
+            ).fetchone()
+
     def rename_conversation(self, conversation_id: str, title: str) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -264,6 +283,63 @@ class Database:
     def delete_conversation(self, conversation_id: str) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+
+    def create_or_get_chat_attachment(
+        self,
+        conversation_id: str,
+        filename: str,
+        sha256: str,
+        size_bytes: int,
+        stored_path: str,
+        extracted_text: str,
+    ):
+        attachment_id = str(uuid.uuid4())
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """INSERT OR IGNORE INTO chat_attachments
+                (id, conversation_id, filename, sha256, size_bytes, stored_path, extracted_text, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    attachment_id,
+                    conversation_id,
+                    filename,
+                    sha256,
+                    size_bytes,
+                    stored_path,
+                    extracted_text,
+                    utc_now(),
+                ),
+            )
+            created = cursor.rowcount == 1
+            row = conn.execute(
+                """SELECT * FROM chat_attachments
+                WHERE conversation_id=? AND sha256=?""",
+                (conversation_id, sha256),
+            ).fetchone()
+        return row, created
+
+    def list_chat_attachments(self, conversation_id: str):
+        with self.connect() as conn:
+            return conn.execute(
+                """SELECT * FROM chat_attachments WHERE conversation_id=?
+                ORDER BY created_at, filename""",
+                (conversation_id,),
+            ).fetchall()
+
+    def delete_chat_attachment(self, attachment_id: str, conversation_id: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT stored_path FROM chat_attachments
+                WHERE id=? AND conversation_id=?""",
+                (attachment_id, conversation_id),
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                "DELETE FROM chat_attachments WHERE id=? AND conversation_id=?",
+                (attachment_id, conversation_id),
+            )
+            return str(row["stored_path"])
 
     def add_message(self, conversation_id: str, role: str, content: str, sources=None) -> None:
         with self.connect() as conn:

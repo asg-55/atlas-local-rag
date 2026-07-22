@@ -38,6 +38,10 @@ class Settings:
         return self.data_dir / "documents"
 
     @property
+    def chat_attachments_dir(self) -> Path:
+        return self.data_dir / "chat_attachments"
+
+    @property
     def index_path(self) -> Path:
         return self.data_dir / "vector.index"
 
@@ -48,6 +52,7 @@ class Settings:
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.documents_dir.mkdir(parents=True, exist_ok=True)
+        self.chat_attachments_dir.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

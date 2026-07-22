@@ -194,6 +194,62 @@ def render_sources(sources: list[dict]) -> None:
             st.caption(source.get("excerpt", ""))
 
 
+@st.dialog("История диалогов", width="large")
+def show_conversation_history(current_id: str) -> None:
+    conversations = db.list_conversations()
+    current = next((row for row in conversations if row["id"] == current_id), None)
+    search = st.text_input(
+        "Найти диалог",
+        placeholder="Введите часть названия…",
+        key="conversation-history-search",
+    ).strip().casefold()
+    filtered = [row for row in conversations if search in row["title"].casefold()]
+    st.caption(f"Найдено: {len(filtered)}")
+    if not filtered:
+        st.info("Диалоги с таким названием не найдены.")
+    for row in filtered:
+        button_col, date_col = st.columns([5, 2])
+        marker = "● " if row["id"] == current_id else ""
+        if button_col.button(
+            f"{marker}{row['title']}",
+            key=f"open-conversation-{row['id']}",
+            use_container_width=True,
+        ):
+            st.session_state.conversation_id = row["id"]
+            st.rerun()
+        date_col.caption(row["updated_at"][:16].replace("T", " · "))
+
+    if current:
+        st.divider()
+        st.markdown("#### Текущий диалог")
+        new_title = st.text_input(
+            "Название",
+            value=current["title"],
+            key=f"conversation-title-{current_id}",
+        ).strip()
+        rename_col, delete_col = st.columns([2, 1])
+        if rename_col.button(
+            "Сохранить название",
+            key=f"rename-conversation-{current_id}",
+            use_container_width=True,
+            disabled=not new_title or new_title == current["title"],
+        ):
+            db.rename_conversation(current_id, new_title)
+            st.rerun()
+        confirm_delete = delete_col.checkbox(
+            "Подтвердить удаление", key=f"confirm-delete-conversation-{current_id}"
+        )
+        if delete_col.button(
+            "Удалить",
+            key=f"delete-conversation-{current_id}",
+            use_container_width=True,
+            disabled=not confirm_delete,
+        ):
+            service.delete_conversation(current_id)
+            st.session_state.pop("conversation_id", None)
+            st.rerun()
+
+
 conversation_id = ensure_conversation()
 
 with st.sidebar:
@@ -204,20 +260,20 @@ with st.sidebar:
     )
     stats = db.stats()
     st.caption(f"{stats['documents']} документов · {stats['chunks']} фрагментов")
-    if st.button("＋ Новый диалог", use_container_width=True, type="primary"):
+    new_col, history_col = st.columns(2)
+    if new_col.button("＋ Новый", use_container_width=True, type="primary"):
         st.session_state.conversation_id = db.create_conversation()
         st.rerun()
-    conversations = db.list_conversations()
-    labels = {row["id"]: row["title"] for row in conversations}
-    selected = st.selectbox(
-        "История диалогов",
-        options=list(labels),
-        format_func=lambda value: labels[value],
-        index=list(labels).index(conversation_id) if conversation_id in labels else 0,
-    )
-    if selected != conversation_id:
-        st.session_state.conversation_id = selected
-        st.rerun()
+    if history_col.button("История", use_container_width=True):
+        show_conversation_history(conversation_id)
+    current_conversation = db.get_conversation(conversation_id)
+    st.caption("ТЕКУЩИЙ ДИАЛОГ")
+    st.write(current_conversation["title"] if current_conversation else "Новый диалог")
+    attachment_count = len(db.list_chat_attachments(conversation_id))
+    if attachment_count:
+        st.caption(f"Вложений без индексации: {attachment_count}")
+    st.divider()
+    st.caption("РЕЖИМ ОТВЕТА")
     knowledge_mode = st.radio(
         "Источник ответа",
         ["Только документы", "Документы + знания модели"],
@@ -225,30 +281,6 @@ with st.sidebar:
         help="В первом режиме ответ строится только по загруженной базе; во втором модель может дополнять его общими знаниями.",
     )
     strict_mode = knowledge_mode == "Только документы"
-    st.markdown("---")
-    st.caption("МОДЕЛЬ И КАЧЕСТВО")
-    model_options = available_models(service.ollama)
-    if settings.chat_model not in model_options:
-        model_options.insert(0, settings.chat_model)
-    selected_model = st.selectbox(
-        "Модель ответа",
-        options=model_options,
-        index=model_options.index(settings.chat_model),
-        help="Список моделей, установленных в Ollama.",
-    )
-    supports_thinking = "thinking" in service.ollama.capabilities(selected_model)
-    if supports_thinking:
-        reasoning_mode = st.selectbox(
-            "Рассуждение модели",
-            ["Выключено — быстрее", "Включено — сложный анализ"],
-            index=0,
-            help="Рассуждение повышает качество сложного анализа, но расходует часть лимита токенов до формирования ответа.",
-        )
-        think = reasoning_mode.startswith("Включено")
-    else:
-        think = False
-    if selected_model.startswith("qwen2.5"):
-        st.caption("Для контекста 64К и ответов до 32К выберите установленную `qwen3.5:9b`.")
     quality_profile = st.selectbox(
         "Профиль качества",
         ["Быстро", "Баланс", "Глубокий анализ", "Вручную"],
@@ -259,27 +291,49 @@ with st.sidebar:
         ["Краткий ответ", "Подробный ответ", "Извлечь все данные", "Аналитический разбор"],
         index=1,
     )
-    scope_documents = [row for row in db.list_documents() if row["status"] == "ready"]
-    scope_options = [None] + [row["id"] for row in scope_documents]
-    scope_labels = {None: "Все документы", **{row["id"]: row["filename"] for row in scope_documents}}
-    selected_document_id = st.selectbox(
-        "Область поиска",
-        scope_options,
-        format_func=lambda value: scope_labels[value],
-        help="Выберите конкретный файл, если нужно извлечь из него все данные.",
-    )
-    profile_values = {
-        "Быстро": {"temperature": 0.1, "tokens": 1024, "chunks": 5, "ctx": 8192, "top_p": 0.85},
-        "Баланс": {"temperature": 0.2, "tokens": 4096, "chunks": 9, "ctx": 16384, "top_p": 0.9},
-        "Глубокий анализ": {"temperature": 0.15, "tokens": 8192, "chunks": 15, "ctx": 32768, "top_p": 0.9},
-        "Вручную": {"temperature": 0.25, "tokens": 4096, "chunks": 10, "ctx": 32768, "top_p": 0.9},
-    }
-    defaults = profile_values[quality_profile]
-    model_context_limit = service.ollama.context_length(selected_model)
-    context_options = [value for value in [8192, 16384, 32768, 65536] if value <= model_context_limit]
-    if not context_options:
-        context_options = [min(8192, model_context_limit)]
-    with st.expander("Тонкая настройка"):
+    with st.popover("⚙ Расширенные настройки", use_container_width=True):
+        model_options = available_models(service.ollama)
+        if settings.chat_model not in model_options:
+            model_options.insert(0, settings.chat_model)
+        selected_model = st.selectbox(
+            "Модель ответа",
+            options=model_options,
+            index=model_options.index(settings.chat_model),
+            help="Список моделей, установленных в Ollama.",
+        )
+        supports_thinking = "thinking" in service.ollama.capabilities(selected_model)
+        if supports_thinking:
+            reasoning_mode = st.selectbox(
+                "Рассуждение модели",
+                ["Выключено — быстрее", "Включено — сложный анализ"],
+                index=0,
+                help="Рассуждение повышает качество сложного анализа, но расходует часть лимита токенов до формирования ответа.",
+            )
+            think = reasoning_mode.startswith("Включено")
+        else:
+            think = False
+        if selected_model.startswith("qwen2.5"):
+            st.caption("Для контекста 64К и ответов до 32К выберите `qwen3.5:9b`.")
+        scope_documents = [row for row in db.list_documents() if row["status"] == "ready"]
+        scope_options = [None] + [row["id"] for row in scope_documents]
+        scope_labels = {None: "Все документы", **{row["id"]: row["filename"] for row in scope_documents}}
+        selected_document_id = st.selectbox(
+            "Область поиска",
+            scope_options,
+            format_func=lambda value: scope_labels[value],
+            help="Выберите конкретный файл, если нужно извлечь из него все данные.",
+        )
+        profile_values = {
+            "Быстро": {"temperature": 0.1, "tokens": 1024, "chunks": 5, "ctx": 8192, "top_p": 0.85},
+            "Баланс": {"temperature": 0.2, "tokens": 4096, "chunks": 9, "ctx": 16384, "top_p": 0.9},
+            "Глубокий анализ": {"temperature": 0.15, "tokens": 8192, "chunks": 15, "ctx": 32768, "top_p": 0.9},
+            "Вручную": {"temperature": 0.25, "tokens": 4096, "chunks": 10, "ctx": 32768, "top_p": 0.9},
+        }
+        defaults = profile_values[quality_profile]
+        model_context_limit = service.ollama.context_length(selected_model)
+        context_options = [value for value in [8192, 16384, 32768, 65536] if value <= model_context_limit]
+        if not context_options:
+            context_options = [min(8192, model_context_limit)]
         temperature = st.slider(
             "Температура", 0.0, 1.0, defaults["temperature"], 0.05,
             key=f"temperature-{quality_profile}",
@@ -327,25 +381,21 @@ with st.sidebar:
         )
         if num_predict >= num_ctx // 2:
             st.warning("Ответу отдана половина контекста или больше — для поиска по документам останется меньше места.")
-    if answer_mode == "Извлечь все данные":
-        final_k = max(final_k, 16)
-        num_predict = max(num_predict, 4096)
-    with st.expander("Подключение"):
+        st.divider()
         healthy, status = service.ollama.health(selected_model)
         (st.success if healthy else st.error)(status)
         st.caption(f"LLM: {selected_model}")
         st.caption(f"Embeddings: {settings.embedding_model}")
         st.caption(f"Reranker: {settings.reranker_model if settings.enable_reranker else 'выключен'}")
-    if st.button("Удалить текущий диалог", use_container_width=True):
-        db.delete_conversation(conversation_id)
-        st.session_state.pop("conversation_id", None)
-        st.rerun()
+    if answer_mode == "Извлечь все данные":
+        final_k = max(final_k, 16)
+        num_predict = max(num_predict, 4096)
 
 
 st.markdown(
     f"""<section class="chat-head">
     <div class="assistant-orb">◈</div>
-    <div><h1>Atlas</h1><p>Ассистент по рабочей базе знаний</p></div>
+    <div><h1>Atlas</h1><p>{html.escape(current_conversation['title'] if current_conversation else 'Новый диалог')}</p></div>
     <span class="model-chip">{html.escape(selected_model)}</span>
     </section>""",
     unsafe_allow_html=True,
@@ -359,6 +409,34 @@ active_section = st.segmented_control(
 ) or "Чат"
 
 if active_section == "Чат":
+    notice = st.session_state.pop("chat-attachment-notice", None)
+    if notice:
+        st.success(notice)
+    conversation_attachments = db.list_chat_attachments(conversation_id)
+    use_rag_for_chat = True
+    if conversation_attachments:
+        with st.expander(
+            f"Вложения диалога · {len(conversation_attachments)} · без индексации в RAG",
+            expanded=False,
+        ):
+            for attachment in conversation_attachments:
+                name_col, size_col, remove_col = st.columns([5, 2, 1])
+                name_col.markdown(f"**{attachment['filename']}**")
+                size_col.caption(f"{attachment['size_bytes'] / 1024 / 1024:.1f} МБ")
+                if remove_col.button(
+                    "Убрать",
+                    key=f"remove-chat-attachment-{attachment['id']}",
+                    use_container_width=True,
+                ):
+                    service.delete_chat_attachment(conversation_id, attachment["id"])
+                    st.session_state["chat-attachment-notice"] = "Вложение удалено из диалога."
+                    st.rerun()
+            use_rag_for_chat = st.checkbox(
+                "Также искать в постоянной базе знаний",
+                value=False,
+                key=f"use-rag-with-attachments-{conversation_id}",
+                help="Выключено по умолчанию: ответ строится только по вложениям этого диалога.",
+            )
     messages = db.messages(conversation_id)
     if not messages:
         st.markdown(
@@ -372,10 +450,42 @@ if active_section == "Чат":
             if message["role"] == "assistant":
                 render_sources(service.decode_sources(message))
     st.caption("Можно писать обычными словами — Atlas уточнит задачу, если данных недостаточно.")
-    question = st.chat_input("Например: сравни эти требования и покажи различия таблицей…")
-    if question:
+    submission = st.chat_input(
+        "Напишите вопрос или прикрепите файл без добавления в RAG…",
+        accept_file="multiple",
+        file_type=["pdf", "doc", "docx", "xlsx", "txt", "md", "csv", "jpg", "jpeg", "png", "mp3", "wav", "m4a", "ogg", "flac"],
+    )
+    if submission:
+        question = str(getattr(submission, "text", submission) or "").strip()
+        direct_files = list(getattr(submission, "files", []) or [])
+        attached_names: list[str] = []
+        attachment_errors: list[str] = []
+        if direct_files:
+            with st.spinner("Читаю вложения без добавления в RAG…"):
+                for uploaded in direct_files:
+                    try:
+                        row, created = service.attach_to_conversation(
+                            conversation_id, uploaded.name, uploaded.getvalue()
+                        )
+                        attached_names.append(row["filename"])
+                        if not created:
+                            st.info(f"{uploaded.name}: уже прикреплён к этому диалогу")
+                    except Exception as exc:
+                        attachment_errors.append(f"{uploaded.name}: {exc}")
+            if attached_names:
+                st.session_state["chat-attachment-notice"] = (
+                    f"Вложения готовы: {', '.join(attached_names)}. Они не добавлены в RAG."
+                )
+            for error in attachment_errors:
+                st.error(error)
+        if not question:
+            if attached_names:
+                st.rerun()
+            st.stop()
         with st.chat_message("user"):
             st.markdown(question)
+            if attached_names:
+                st.caption(f"Вложения: {', '.join(attached_names)}")
         with st.chat_message("assistant"):
             try:
                 with st.spinner("Понимаю задачу и ищу подтверждения в документах…"):
@@ -393,6 +503,7 @@ if active_section == "Чат":
                         custom_instruction=custom_instruction,
                         document_id=selected_document_id,
                         think=think,
+                        use_rag=use_rag_for_chat if conversation_attachments else not bool(attached_names),
                     )
                 st.markdown(answer)
                 render_sources(sources)
@@ -406,7 +517,7 @@ if active_section == "Файлы":
     st.markdown("<div class='section-title'>Добавить материалы</div><div class='section-copy'>Документы сохраняются локально и сразу становятся доступны в поиске.</div>", unsafe_allow_html=True)
     uploaded_files = st.file_uploader(
         "PDF, DOC, DOCX, XLSX, изображения или аудио",
-        type=["pdf", "doc", "docx", "xlsx", "jpg", "jpeg", "png", "mp3", "wav", "m4a", "ogg", "flac"],
+        type=["pdf", "doc", "docx", "xlsx", "txt", "md", "csv", "jpg", "jpeg", "png", "mp3", "wav", "m4a", "ogg", "flac"],
         accept_multiple_files=True,
         help="Оригиналы сохраняются локально. Повторная загрузка того же файла определяется по SHA-256.",
     )

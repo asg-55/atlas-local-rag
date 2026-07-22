@@ -206,9 +206,16 @@ JSON:"""
         answer_mode: str = "Подробный ответ",
         custom_instruction: str = "",
         think: bool = False,
+        attachments: list[dict] | None = None,
     ) -> str:
         context_parts = []
-        for index, result in enumerate(results, start=1):
+        for index, attachment in enumerate(attachments or [], start=1):
+            context_parts.append(
+                f"[{index}] Вложение диалога: {attachment['filename']}; не добавлено в RAG\n"
+                f"{attachment['extracted_text']}"
+            )
+        attachment_count = len(attachments or [])
+        for index, result in enumerate(results, start=attachment_count + 1):
             context_parts.append(
                 f"[{index}] Источник: {result.chunk.filename}; {result.chunk.location}\n{result.chunk.content}"
             )

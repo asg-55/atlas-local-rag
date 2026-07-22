@@ -498,6 +498,19 @@ def parse_audio(path: Path) -> list[TextBlock]:
     return [TextBlock(text=text, location="расшифровка аудио", block_type="audio")] if text else []
 
 
+def parse_text(path: Path) -> list[TextBlock]:
+    content = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-8", "cp1251"):
+        try:
+            text = content.decode(encoding).strip()
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        text = content.decode("utf-8", errors="replace").strip()
+    return [TextBlock(text=text, location="текстовый файл", block_type="text")] if text else []
+
+
 def parse_file(path: Path) -> list[TextBlock]:
     extension = path.suffix.lower()
     if extension == ".pdf":
@@ -512,4 +525,6 @@ def parse_file(path: Path) -> list[TextBlock]:
         return parse_image(path)
     if extension in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}:
         return parse_audio(path)
+    if extension in {".txt", ".md", ".csv"}:
+        return parse_text(path)
     raise ValueError(f"Формат {extension or '<без расширения>'} не поддерживается")
