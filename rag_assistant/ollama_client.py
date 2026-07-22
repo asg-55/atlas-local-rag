@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import requests
 
 
@@ -8,6 +10,7 @@ class OllamaClient:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self._context_lengths: dict[str, int] = {}
 
     def models(self) -> list[str]:
         response = requests.get(f"{self.base_url}/api/tags", timeout=5)
@@ -28,6 +31,27 @@ class OllamaClient:
                 return set(item.get("capabilities") or [])
         return set()
 
+    def context_length(self, model: str | None = None) -> int:
+        selected = model or self.model
+        if selected in self._context_lengths:
+            return self._context_lengths[selected]
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/show", json={"model": selected}, timeout=10
+            )
+            response.raise_for_status()
+            model_info = response.json().get("model_info", {})
+            lengths = [
+                int(value)
+                for key, value in model_info.items()
+                if key.endswith(".context_length") and isinstance(value, (int, float))
+            ]
+            length = max(lengths) if lengths else 32768
+        except (requests.RequestException, TypeError, ValueError):
+            length = 32768
+        self._context_lengths[selected] = length
+        return length
+
     def health(self, model: str | None = None) -> tuple[bool, str]:
         try:
             selected = model or self.model
@@ -47,6 +71,7 @@ class OllamaClient:
         top_p: float = 0.9,
         num_ctx: int = 16384,
         think: bool = False,
+        json_output: bool = False,
     ) -> str:
         payload = {
             "model": model or self.model,
@@ -61,6 +86,8 @@ class OllamaClient:
                 "repeat_penalty": 1.05,
             },
         }
+        if json_output:
+            payload["format"] = "json"
         response = requests.post(f"{self.base_url}/api/generate", json=payload, timeout=self.timeout)
         response.raise_for_status()
         data = response.json()
@@ -76,6 +103,72 @@ class OllamaClient:
         if not answer:
             raise RuntimeError("Модель не сформировала финальный ответ. Увеличьте лимит токенов или отключите рассуждение.")
         return answer
+
+    def interpret_question(
+        self,
+        question: str,
+        history: list[dict],
+        model: str | None = None,
+        document_selected: bool = False,
+    ) -> dict:
+        transcript = "\n".join(
+            f"{'Пользователь' if item['role'] == 'user' else 'Ассистент'}: {item['content'][:1200]}"
+            for item in history[-6:]
+        )
+        prompt = f"""Ты — интерпретатор запросов к локальной базе производственных документов.
+Определи намерение пользователя и подготовь самостоятельный поисковый запрос.
+
+Верни только JSON с полями:
+- intent: короткое название задачи на русском;
+- search_query: точный самостоятельный запрос для поиска по документам;
+- needs_clarification: true или false;
+- clarifying_question: один короткий уточняющий вопрос или пустая строка.
+
+Правила:
+1. Исправляй опечатки и раскрывай ссылки «это», «там», «по нему» из истории.
+2. Не требуй от пользователя профессионального промпта: самостоятельно улучшай понятные бытовые формулировки.
+3. Уточнение нужно только когда без выбора объекта, периода или желаемого результата возможны существенно разные ответы.
+4. Не уточняй простой фактический вопрос, даже если он сформулирован кратко.
+5. Если выбран конкретный документ, запросы «сделай таблицу», «вытащи данные» и подобные считаются достаточно определёнными.
+6. Не отвечай на сам вопрос и не придумывай факты.
+
+Выбран конкретный документ: {'да' if document_selected else 'нет'}
+История:
+{transcript or 'нет'}
+
+Последний запрос: {question}
+JSON:"""
+        try:
+            raw = self.generate(
+                prompt,
+                temperature=0.0,
+                num_predict=420,
+                model=model,
+                num_ctx=8192,
+                json_output=True,
+            )
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError("Интерпретатор вернул не объект JSON")
+            search_query = str(parsed.get("search_query") or question).strip()
+            clarification = str(parsed.get("clarifying_question") or "").strip()
+            needs_value = parsed.get("needs_clarification")
+            needs_clarification = (
+                needs_value is True or str(needs_value).strip().lower() == "true"
+            ) and bool(clarification)
+            return {
+                "intent": str(parsed.get("intent") or "Поиск по документам").strip(),
+                "search_query": search_query or question,
+                "needs_clarification": needs_clarification,
+                "clarifying_question": clarification if needs_clarification else "",
+            }
+        except (requests.RequestException, RuntimeError, json.JSONDecodeError, TypeError, ValueError):
+            return {
+                "intent": "Поиск по документам",
+                "search_query": self.standalone_question(question, history, model=model),
+                "needs_clarification": False,
+                "clarifying_question": "",
+            }
 
     def standalone_question(self, question: str, history: list[dict], model: str | None = None) -> str:
         if not history:
@@ -96,7 +189,7 @@ class OllamaClient:
         try:
             rewritten = self.generate(prompt, temperature=0.0, num_predict=220, model=model)
             return rewritten.strip(' "') or question
-        except requests.RequestException:
+        except (requests.RequestException, RuntimeError):
             return question
 
     def answer(

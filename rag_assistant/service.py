@@ -83,8 +83,20 @@ class AssistantService:
     ) -> tuple[str, list[dict], str]:
         previous_rows = self.db.messages(conversation_id, limit=8)
         history = [dict(row) for row in previous_rows]
-        standalone = self.ollama.standalone_question(question, history, model=model)
+        interpretation = self.ollama.interpret_question(
+            question,
+            history,
+            model=model,
+            document_selected=document_id is not None,
+        )
+        standalone = interpretation["search_query"]
         self.db.add_message(conversation_id, "user", question)
+        if interpretation["needs_clarification"]:
+            answer = interpretation["clarifying_question"]
+            self.db.add_message(conversation_id, "assistant", answer)
+            if not history:
+                self.db.rename_conversation(conversation_id, question[:70])
+            return answer, [], standalone
         results = self.retriever.search(
             standalone,
             final_k=final_k,
@@ -93,7 +105,11 @@ class AssistantService:
         )
         context_size = 0
         bounded_results = []
-        context_budget = min(80000, max(self.settings.max_context_chars, int(num_ctx * 2.2)))
+        history_chars = sum(len(item["content"][:1000]) for item in history[-6:])
+        reserved_chars = 8000 + history_chars + len(question)
+        available_chars = max(3000, int(max(1024, num_ctx - num_predict) * 2.5) - reserved_chars)
+        desired_chars = max(self.settings.max_context_chars, int(num_ctx * 2.2))
+        context_budget = min(120000, desired_chars, available_chars)
         for result in results:
             if bounded_results and context_size + len(result.chunk.content) > context_budget:
                 break

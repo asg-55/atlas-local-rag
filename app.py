@@ -248,7 +248,7 @@ with st.sidebar:
     else:
         think = False
     if selected_model.startswith("qwen2.5"):
-        st.caption("Для более глубоких ответов: `ollama pull qwen3.5:9b`, затем выберите её здесь.")
+        st.caption("Для контекста 64К и ответов до 32К выберите установленную `qwen3.5:9b`.")
     quality_profile = st.selectbox(
         "Профиль качества",
         ["Быстро", "Баланс", "Глубокий анализ", "Вручную"],
@@ -270,28 +270,47 @@ with st.sidebar:
     )
     profile_values = {
         "Быстро": {"temperature": 0.1, "tokens": 1024, "chunks": 5, "ctx": 8192, "top_p": 0.85},
-        "Баланс": {"temperature": 0.2, "tokens": 2560, "chunks": 9, "ctx": 16384, "top_p": 0.9},
-        "Глубокий анализ": {"temperature": 0.15, "tokens": 4864, "chunks": 15, "ctx": 32768, "top_p": 0.9},
-        "Вручную": {"temperature": 0.25, "tokens": 3072, "chunks": 10, "ctx": 16384, "top_p": 0.9},
+        "Баланс": {"temperature": 0.2, "tokens": 4096, "chunks": 9, "ctx": 16384, "top_p": 0.9},
+        "Глубокий анализ": {"temperature": 0.15, "tokens": 8192, "chunks": 15, "ctx": 32768, "top_p": 0.9},
+        "Вручную": {"temperature": 0.25, "tokens": 4096, "chunks": 10, "ctx": 32768, "top_p": 0.9},
     }
     defaults = profile_values[quality_profile]
+    model_context_limit = service.ollama.context_length(selected_model)
+    context_options = [value for value in [8192, 16384, 32768, 65536] if value <= model_context_limit]
+    if not context_options:
+        context_options = [min(8192, model_context_limit)]
     with st.expander("Тонкая настройка"):
         temperature = st.slider(
             "Температура", 0.0, 1.0, defaults["temperature"], 0.05,
             key=f"temperature-{quality_profile}",
             help="Ниже — точнее и стабильнее; выше — разнообразнее.",
         )
-        num_predict = st.slider(
-            "Максимум токенов ответа", 512, 8192, defaults["tokens"], 256,
-            key=f"tokens-{quality_profile}",
+        default_ctx = max(value for value in context_options if value <= min(defaults["ctx"], max(context_options)))
+        num_ctx = st.select_slider(
+            "Контекст модели",
+            context_options,
+            value=default_ctx,
+            key=f"ctx-{quality_profile}-{selected_model}",
+            help="Общий бюджет: системная инструкция, история, найденные фрагменты и ответ.",
+        )
+        answer_ceiling = max(512, min(32768, num_ctx - 4096))
+        answer_options = [
+            value
+            for value in [512, 1024, 2048, 4096, 8192, 12288, 16384, 24576, 28672, 32768]
+            if value <= answer_ceiling
+        ]
+        default_tokens = min(defaults["tokens"], max(answer_options))
+        default_tokens = max(value for value in answer_options if value <= default_tokens)
+        num_predict = st.select_slider(
+            "Максимум токенов ответа",
+            answer_options,
+            value=default_tokens,
+            key=f"tokens-{quality_profile}-{selected_model}-{num_ctx}",
+            help="Это верхняя граница ответа, а не обязательная длина. Большой ответ оставляет меньше контекста для документов.",
         )
         final_k = st.slider(
             "Фрагментов в контексте", 3, 20, defaults["chunks"], 1,
             key=f"chunks-{quality_profile}",
-        )
-        num_ctx = st.select_slider(
-            "Контекст модели", [8192, 16384, 32768], value=defaults["ctx"],
-            key=f"ctx-{quality_profile}",
         )
         top_p = st.slider(
             "Top P", 0.5, 1.0, defaults["top_p"], 0.05,
@@ -302,6 +321,12 @@ with st.sidebar:
             placeholder="Например: сначала покажи итог, затем таблицу и проверь арифметику.",
             height=90,
         )
+        st.caption(
+            f"Модель поддерживает до {model_context_limit // 1024}К токенов контекста; "
+            f"в Atlas доступно до {max(context_options) // 1024}К."
+        )
+        if num_predict >= num_ctx // 2:
+            st.warning("Ответу отдана половина контекста или больше — для поиска по документам останется меньше места.")
     if answer_mode == "Извлечь все данные":
         final_k = max(final_k, 16)
         num_predict = max(num_predict, 4096)
@@ -346,13 +371,14 @@ if active_section == "Чат":
             st.markdown(message["content"])
             if message["role"] == "assistant":
                 render_sources(service.decode_sources(message))
-    question = st.chat_input("Спросите что-нибудь по базе документов…")
+    st.caption("Можно писать обычными словами — Atlas уточнит задачу, если данных недостаточно.")
+    question = st.chat_input("Например: сравни эти требования и покажи различия таблицей…")
     if question:
         with st.chat_message("user"):
             st.markdown(question)
         with st.chat_message("assistant"):
             try:
-                with st.spinner("Ищу подтверждения в документах…"):
+                with st.spinner("Понимаю задачу и ищу подтверждения в документах…"):
                     answer, sources, standalone = service.answer(
                         conversation_id,
                         question,

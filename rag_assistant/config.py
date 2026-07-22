@@ -14,7 +14,7 @@ def _env_bool(name: str, default: bool) -> bool:
 class Settings:
     data_dir: Path = Path(os.getenv("DATA_DIR", "data"))
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    chat_model: str = os.getenv("CHAT_MODEL", "qwen2.5:7b-instruct-q4_K_M")
+    chat_model: str = os.getenv("CHAT_MODEL", "qwen3.5:9b")
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
     reranker_model: str = os.getenv(
         "RERANKER_MODEL", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
