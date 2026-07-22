@@ -103,11 +103,7 @@ st.markdown(
     .empty-state p {max-width:34rem;margin:auto;color:#8e8e8e;}
     .login-card {background:#242424;border-color:#3a3a3a;color:#eee;box-shadow:0 25px 70px #0008;}
 
-    /* Professional workspace theme */
-    :root {--ink:#f1f3f5;--muted:#9299a6;--line:#2b3038;--paper:#15171b;--panel:#1b1e24;--panel2:#20242b;--accent:#8fa8ff;}
-    html, body, [class*="st-"] {font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
-    .stApp {background:#15171b;color:var(--ink);}
-    .block-container {max-width:1180px;padding:1.15rem 2.4rem 5.5rem;}
+    /* Sidebar controls: retain the graphite theme and keep recovery accessible. */
     header[data-testid="stHeader"] {display:block!important;height:3.25rem;background:transparent!important;pointer-events:none;}
     header[data-testid="stHeader"] button,
     [data-testid="stSidebarCollapsedControl"],
@@ -119,57 +115,33 @@ st.markdown(
     [data-testid="stAppDeployButton"] {display:none!important;}
     [data-testid="stSidebarCollapsedControl"],
     [data-testid="stExpandSidebarButton"] {
-        display:flex!important;position:fixed!important;left:.8rem!important;top:.7rem!important;z-index:100000!important;
+        display:flex!important;position:fixed!important;left:.75rem!important;top:.7rem!important;z-index:100000!important;
         visibility:visible!important;opacity:1!important;
     }
     [data-testid="stSidebar"][aria-expanded="true"] [data-testid="stSidebarCollapseButton"] {
-        display:flex!important;position:absolute!important;right:.65rem!important;top:.65rem!important;z-index:100000!important;
+        display:flex!important;position:absolute!important;right:.65rem!important;top:4.8rem!important;z-index:100000!important;
         visibility:visible!important;opacity:1!important;
     }
     [data-testid="stSidebarCollapsedControl"] button,
     [data-testid="stExpandSidebarButton"] button,
     [data-testid="stSidebar"][aria-expanded="true"] [data-testid="stSidebarCollapseButton"] button {
         display:flex!important;visibility:visible!important;opacity:1!important;
-        width:2.35rem!important;height:2.35rem!important;border:1px solid #343a44!important;
-        border-radius:.55rem!important;background:#1b1e24!important;color:#d9dde4!important;
-        box-shadow:0 8px 24px #0005!important;
+        align-items:center!important;justify-content:center!important;padding:0!important;
+        width:2.15rem!important;height:2.15rem!important;min-height:2.15rem!important;border:1px solid #3b3b3b!important;
+        border-radius:.65rem!important;background:#242424!important;color:#d8d8d8!important;
+        box-shadow:0 7px 20px #0004!important;
     }
     [data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"],
     [data-testid="stExpandSidebarButton"] [data-testid="stIconMaterial"] {display:none!important;}
-    [data-testid="stSidebarCollapseButton"] button::before {content:"‹";font-size:1.55rem;line-height:1;color:#d9dde4;}
-    [data-testid="stExpandSidebarButton"]::before {content:"›";font-size:1.55rem;line-height:1;color:#d9dde4;}
-    [data-testid="stSidebar"] {background:#0f1115;border-right:1px solid #272b32;}
-    [data-testid="stSidebar"] > div:first-child {padding-top:1rem;}
-    [data-testid="stSidebar"] [data-baseweb="select"] > div {background:#191c22;border-color:#30353e;}
-    [data-testid="stSidebar"] .stButton>button {border-radius:.5rem;border-color:#30353e;background:#171a20;font-weight:560;}
-    [data-testid="stSidebar"] .stButton>button:hover {background:#20242b;border-color:#444b57;}
-    [data-testid="stSidebar"] .stButton>button[kind="primary"] {background:#e7eaf0;color:#111318;}
-    .brand {padding:.1rem 0 1.15rem;border-bottom:1px solid #242830;margin-bottom:.9rem;}
-    .brand-mark {width:2rem;height:2rem;border-radius:.45rem;background:#e7eaf0;color:#111318;font-size:.92rem;box-shadow:none;margin-right:.65rem;}
-    .brand-name {font-size:1.05rem;font-weight:680;letter-spacing:.01em;}
-    .brand-sub {font-size:.68rem;letter-spacing:.12em;color:#747c89!important;margin-top:.55rem;}
-    .chat-head {padding:.35rem 0 .9rem;margin-bottom:.8rem;border-bottom:1px solid #2a2e35;}
-    .assistant-orb {width:2.1rem;height:2.1rem;border-radius:.45rem;background:#e7eaf0;color:#111318;font-size:.88rem;}
-    .chat-head h1 {font-size:1rem;font-weight:650;}
-    .chat-head p {color:#89919e;font-size:.76rem;}
-    .model-chip {background:#1b1e24;border-color:#30353e;border-radius:.4rem;color:#939ba7;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;}
-    div[data-testid="stSegmentedControl"] > div {background:#1a1d22;border:1px solid #292e36;border-radius:.65rem;padding:.2rem;}
-    div[data-testid="stSegmentedControl"] button {border-radius:.45rem!important;font-weight:550!important;}
-    [data-testid="stChatMessage"] {max-width:880px;border-bottom:1px solid #272b32;padding:1.1rem .2rem;}
-    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {background:#181b20;}
-    [data-testid="stChatInput"] {max-width:880px;background:#20242a;border:1px solid #3a404b;border-radius:.85rem;box-shadow:0 14px 38px #0007;}
-    [data-testid="stChatInput"]:focus-within {border-color:#667aa8;box-shadow:0 14px 38px #0007,0 0 0 1px #667aa855;}
-    [data-testid="stVerticalBlockBorderWrapper"], [data-testid="stMetric"] {background:#1a1d22;border-color:#2b3038!important;border-radius:.65rem!important;}
-    .stButton>button {border-radius:.5rem;font-weight:560;background:#20242a;border-color:#343a44;}
-    .stButton>button:hover {border-color:#505866;background:#262a31;}
-    .stButton>button[kind="primary"] {background:#e7eaf0;color:#111318;}
-    .source-card {background:#1a1d22;border-color:#30353e;border-left-color:#7889b5;border-radius:.45rem;}
-    .feature-note {background:#1a1d22;border-color:#30353e;border-radius:.55rem;color:#aeb5c0;}
-    .empty-state {padding:10vh 1rem 5vh;}
-    .empty-logo {width:2.8rem;height:2.8rem;border-radius:.55rem;background:#e7eaf0;color:#111318;font-size:1rem;}
-    .empty-state h2 {font-size:1.4rem;font-weight:620;letter-spacing:-.01em;}
-    .empty-state p {color:#8e96a3;line-height:1.6;}
-    @media (max-width: 760px) {.block-container {padding:1rem 1rem 5rem;}.model-chip {display:none;}}
+    [data-testid="stSidebarCollapseButton"] button::before {content:"‹";font-size:1.45rem;line-height:1;color:#d8d8d8;transform:translateY(-1px);}
+    [data-testid="stExpandSidebarButton"]::before {content:"›";font-size:1.45rem;line-height:1;color:#d8d8d8;transform:translateY(-1px);}
+    .brand {padding-right:2.7rem;}
+    .st-key-conversation-actions [data-testid="stHorizontalBlock"] {gap:.55rem;}
+    .st-key-conversation-actions [data-testid="stColumn"] {min-width:0;}
+    .st-key-conversation-actions .stButton>button {
+        width:100%;height:2.55rem;min-height:2.55rem;padding:0 .55rem;border-radius:.65rem;
+        display:flex;align-items:center;justify-content:center;line-height:1;font-size:.88rem;white-space:nowrap;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -322,18 +294,19 @@ conversation_id = ensure_conversation()
 
 with st.sidebar:
     st.markdown(
-        "<div class='brand'><span class='brand-mark'>A</span><span class='brand-name'>Atlas</span>"
+        "<div class='brand'><span class='brand-mark'>◈</span><span class='brand-name'>Atlas</span>"
         "<div class='brand-sub'>Рабочая база знаний</div></div>",
         unsafe_allow_html=True,
     )
     stats = db.stats()
     st.caption(f"{stats['documents']} документов · {stats['chunks']} фрагментов")
-    new_col, history_col = st.columns(2)
-    if new_col.button("＋ Новый", use_container_width=True, type="primary"):
-        st.session_state.conversation_id = db.create_conversation()
-        st.rerun()
-    if history_col.button("История", use_container_width=True):
-        show_conversation_history(conversation_id)
+    with st.container(key="conversation-actions"):
+        new_col, history_col = st.columns(2)
+        if new_col.button("＋ Новый", use_container_width=True, type="primary"):
+            st.session_state.conversation_id = db.create_conversation()
+            st.rerun()
+        if history_col.button("История", use_container_width=True):
+            show_conversation_history(conversation_id)
     current_conversation = db.get_conversation(conversation_id)
     st.caption("ТЕКУЩИЙ ДИАЛОГ")
     st.write(current_conversation["title"] if current_conversation else "Новый диалог")
@@ -462,7 +435,7 @@ with st.sidebar:
 
 st.markdown(
     f"""<section class="chat-head">
-    <div class="assistant-orb">A</div>
+    <div class="assistant-orb">◈</div>
     <div><h1>Atlas</h1><p>{html.escape(current_conversation['title'] if current_conversation else 'Новый диалог')}</p></div>
     <span class="model-chip">{html.escape(selected_model)}</span>
     </section>""",
@@ -508,7 +481,7 @@ if active_section == "Чат":
     messages = db.messages(conversation_id)
     if not messages:
         st.markdown(
-            "<div class='empty-state'><div class='empty-logo'>A</div><h2>Чем помочь?</h2>"
+            "<div class='empty-state'><div class='empty-logo'>◈</div><h2>Чем помочь?</h2>"
             "<p>Спросите о документации, попросите собрать таблицу параметров, сравнить требования или извлечь все данные со скана.</p></div>",
             unsafe_allow_html=True,
         )
