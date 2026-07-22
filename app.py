@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hmac
 import html
-import hashlib
 from pathlib import Path
 
 import streamlit as st
@@ -11,10 +10,10 @@ from rag_assistant.config import settings
 from rag_assistant.service import AssistantService
 from rag_assistant.report_extractor import (
     export_reports_xlsx,
-    extract_batch_pdf,
     pdf_page_count,
     render_pdf_page,
 )
+from rag_assistant.report_jobs import ReportJobManager
 
 
 st.set_page_config(page_title="Atlas · рабочая база знаний", page_icon="◈", layout="wide")
@@ -138,6 +137,29 @@ def get_service() -> AssistantService:
 
 service = get_service()
 db = service.db
+
+
+@st.cache_resource
+def get_report_job_manager(_db) -> ReportJobManager:
+    return ReportJobManager(_db, settings.data_dir)
+
+
+report_jobs = get_report_job_manager(db)
+
+
+@st.fragment(run_every=2.0)
+def render_report_job_progress(job_id: str) -> None:
+    job = db.get_report_job(job_id)
+    if not job:
+        st.warning("Задание OCR больше не найдено.")
+        return
+    done = len(db.report_job_pages(job_id))
+    total = max(1, int(job["total_pages"]))
+    labels = {"queued": "В очереди", "running": "Распознавание", "failed": "Ошибка"}
+    st.progress(min(done / total, 1.0), text=f"{labels.get(job['status'], job['status'])}: {done} из {total} стр.")
+    st.caption("Можно перейти в другой раздел Atlas — задание продолжит работу в фоне.")
+    if job["status"] in {"completed", "failed"}:
+        st.rerun()
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -423,7 +445,6 @@ if active_section == "Отчеты в Excel":
     )
     if batch_pdf is not None:
         pdf_bytes = batch_pdf.getvalue()
-        pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()[:12]
         try:
             pages_total = pdf_page_count(pdf_bytes)
             st.caption(f"{batch_pdf.name} · {pages_total} стр. · {len(pdf_bytes) / 1024 / 1024:.1f} МБ")
@@ -442,78 +463,90 @@ if active_section == "Отчеты в Excel":
                 )
                 dpi = {"Быстро · 180 DPI": 180, "Баланс · 220 DPI": 220, "Точно · 260 DPI": 260}[quality_label]
             if st.button("Распознать отчеты", type="primary", use_container_width=True):
-                progress_bar = st.progress(0.0, text="Подготовка PDF…")
-
-                def update_report_progress(done: int, total: int, label: str) -> None:
-                    progress_bar.progress(done / max(1, total), text=label)
-
-                reports_df, journal_df, quality_df = extract_batch_pdf(
-                    pdf_bytes,
+                job, created = report_jobs.submit(
                     batch_pdf.name,
-                    start_page=page_range[0],
-                    end_page=page_range[1],
+                    pdf_bytes,
+                    page_start=page_range[0],
+                    page_end=page_range[1],
                     dpi=dpi,
-                    progress=update_report_progress,
                 )
-                st.session_state.batch_report_result = {
-                    "hash": pdf_hash,
-                    "filename": batch_pdf.name,
-                    "pdf": pdf_bytes,
-                    "reports": reports_df,
-                    "journal": journal_df,
-                    "quality": quality_df,
-                }
-                progress_bar.empty()
-                st.success(f"Обработано отчетов: {len(reports_df)}; строк журнала: {len(journal_df)}")
-
-            result = st.session_state.get("batch_report_result")
-            if result and result.get("hash") == pdf_hash:
-                reports_df = result["reports"]
-                journal_df = result["journal"]
-                quality_df = result["quality"]
-                ready_count = int((reports_df["Статус"] == "Готово").sum()) if not reports_df.empty else 0
-                check_count = len(reports_df) - ready_count
-                metric_a, metric_b, metric_c = st.columns(3)
-                metric_a.metric("Отчетов", len(reports_df))
-                metric_b.metric("Готово", ready_count)
-                metric_c.metric("Нужна проверка", check_count)
-                st.markdown("#### Сводные параметры")
-                edited_reports = st.data_editor(
-                    reports_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    key=f"reports-editor-{pdf_hash}",
-                    disabled=["Файл", "Страница"],
-                )
-                st.markdown("#### Журнал процесса")
-                edited_journal = st.data_editor(
-                    journal_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    key=f"journal-editor-{pdf_hash}",
-                    disabled=["Файл", "Страница"],
-                )
-                if not quality_df.empty:
-                    with st.expander(f"Контроль распознавания · {len(quality_df)} предупреждений"):
-                        st.dataframe(quality_df, use_container_width=True, hide_index=True)
-                preview_page = st.selectbox(
-                    "Сверить с оригиналом — страница",
-                    edited_reports["Страница"].dropna().astype(int).tolist(),
-                    key=f"report-preview-page-{pdf_hash}",
-                )
-                st.image(render_pdf_page(pdf_bytes, preview_page), caption=f"Оригинал · страница {preview_page}", use_container_width=True)
-                excel_bytes = export_reports_xlsx(edited_reports, edited_journal, quality_df)
-                output_name = f"{Path(batch_pdf.name).stem}_данные.xlsx"
-                st.download_button(
-                    "Скачать проверенный Excel",
-                    data=excel_bytes,
-                    file_name=output_name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary",
-                    use_container_width=True,
-                )
+                st.session_state.report_job_id = job["id"]
+                if created:
+                    st.success("Задание добавлено в очередь. Можно продолжать работу в других разделах Atlas.")
+                else:
+                    st.info("Для этого PDF, диапазона страниц и DPI уже существует задание — открываю его.")
+                st.rerun()
         except Exception as exc:
             st.error(f"Не удалось подготовить пакет отчетов: {exc}")
+
+    current_job_id = st.session_state.get("report_job_id")
+    current_job = db.get_report_job(current_job_id) if current_job_id else None
+    if current_job is None:
+        current_job = db.latest_report_job()
+        if current_job:
+            current_job_id = current_job["id"]
+            st.session_state.report_job_id = current_job_id
+
+    if current_job:
+        st.markdown(f"#### Задание · {current_job['filename']}")
+        st.caption(
+            f"Страницы {current_job['page_start']}–{current_job['page_end']} · "
+            f"{current_job['dpi']} DPI · ID {str(current_job_id)[:8]}"
+        )
+        if current_job["status"] in {"queued", "running"}:
+            render_report_job_progress(current_job_id)
+        elif current_job["status"] == "failed":
+            st.error(f"Задание завершилось с ошибкой: {current_job['error']}")
+        else:
+            reports_df, journal_df, quality_df = report_jobs.result_frames(current_job_id)
+            ready_count = int((reports_df["Статус"] == "Готово").sum()) if not reports_df.empty else 0
+            check_count = len(reports_df) - ready_count
+            metric_a, metric_b, metric_c = st.columns(3)
+            metric_a.metric("Отчетов", len(reports_df))
+            metric_b.metric("Готово", ready_count)
+            metric_c.metric("Нужна проверка", check_count)
+            st.markdown("#### Сводные параметры")
+            edited_reports = st.data_editor(
+                reports_df,
+                use_container_width=True,
+                hide_index=True,
+                key=f"reports-editor-{current_job_id}",
+                disabled=["Файл", "Страница"],
+            )
+            st.markdown("#### Журнал процесса")
+            edited_journal = st.data_editor(
+                journal_df,
+                use_container_width=True,
+                hide_index=True,
+                key=f"journal-editor-{current_job_id}",
+                disabled=["Файл", "Страница"],
+            )
+            if not quality_df.empty:
+                with st.expander(f"Контроль распознавания · {len(quality_df)} предупреждений"):
+                    st.dataframe(quality_df, use_container_width=True, hide_index=True)
+            preview_pages = edited_reports["Страница"].dropna().astype(int).tolist()
+            if preview_pages:
+                preview_page = st.selectbox(
+                    "Сверить с оригиналом — страница",
+                    preview_pages,
+                    key=f"report-preview-page-{current_job_id}",
+                )
+                stored_pdf = Path(current_job["source_path"]).read_bytes()
+                st.image(
+                    render_pdf_page(stored_pdf, preview_page),
+                    caption=f"Оригинал · страница {preview_page}",
+                    use_container_width=True,
+                )
+            excel_bytes = export_reports_xlsx(edited_reports, edited_journal, quality_df)
+            output_name = f"{Path(current_job['filename']).stem}_данные.xlsx"
+            st.download_button(
+                "Скачать проверенный Excel",
+                data=excel_bytes,
+                file_name=output_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True,
+            )
 
 if active_section == "Диагностика":
     st.subheader("Проверка retrieval без генерации ответа")

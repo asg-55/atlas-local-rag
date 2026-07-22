@@ -86,6 +86,35 @@ class Database:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS report_jobs (
+                    id TEXT PRIMARY KEY,
+                    file_hash TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    page_start INTEGER NOT NULL,
+                    page_end INTEGER NOT NULL,
+                    dpi INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed')),
+                    current_page INTEGER NOT NULL,
+                    total_pages INTEGER NOT NULL,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    UNIQUE(file_hash, page_start, page_end, dpi)
+                );
+                CREATE INDEX IF NOT EXISTS idx_report_jobs_status
+                    ON report_jobs(status, created_at);
+                CREATE TABLE IF NOT EXISTS report_job_pages (
+                    job_id TEXT NOT NULL REFERENCES report_jobs(id) ON DELETE CASCADE,
+                    page_number INTEGER NOT NULL,
+                    report_json TEXT NOT NULL,
+                    journal_json TEXT NOT NULL,
+                    warnings_json TEXT NOT NULL,
+                    error TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(job_id, page_number)
+                );
                 """
             )
 
@@ -260,6 +289,146 @@ class Database:
         with self.connect() as conn:
             row = conn.execute("SELECT value FROM app_meta WHERE key='generation'").fetchone()
             return int(row[0]) if row else 0
+
+    def create_or_get_report_job(
+        self,
+        file_hash: str,
+        filename: str,
+        source_path: str,
+        page_start: int,
+        page_end: int,
+        dpi: int,
+    ):
+        job_id = str(uuid.uuid4())
+        now = utc_now()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """INSERT OR IGNORE INTO report_jobs
+                (id, file_hash, filename, source_path, page_start, page_end, dpi,
+                 status, current_page, total_pages, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)""",
+                (
+                    job_id,
+                    file_hash,
+                    filename,
+                    source_path,
+                    page_start,
+                    page_end,
+                    dpi,
+                    page_start - 1,
+                    page_end - page_start + 1,
+                    now,
+                    now,
+                ),
+            )
+            created = cursor.rowcount == 1
+            row = conn.execute(
+                """SELECT * FROM report_jobs
+                WHERE file_hash=? AND page_start=? AND page_end=? AND dpi=?""",
+                (file_hash, page_start, page_end, dpi),
+            ).fetchone()
+        return row, created
+
+    def get_report_job(self, job_id: str):
+        with self.connect() as conn:
+            return conn.execute("SELECT * FROM report_jobs WHERE id=?", (job_id,)).fetchone()
+
+    def latest_report_job(self):
+        with self.connect() as conn:
+            return conn.execute(
+                "SELECT * FROM report_jobs ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+
+    def recover_report_jobs(self) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """UPDATE report_jobs SET status='queued', error=NULL, updated_at=?
+                WHERE status='running'""",
+                (utc_now(),),
+            )
+
+    def claim_next_report_job(self):
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT * FROM report_jobs WHERE status='queued'
+                ORDER BY created_at LIMIT 1"""
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                "UPDATE report_jobs SET status='running', error=NULL, updated_at=? WHERE id=?",
+                (utc_now(), row["id"]),
+            )
+            return conn.execute("SELECT * FROM report_jobs WHERE id=?", (row["id"],)).fetchone()
+
+    def report_job_completed_pages(self, job_id: str) -> set[int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT page_number FROM report_job_pages WHERE job_id=?", (job_id,)
+            ).fetchall()
+        return {int(row["page_number"]) for row in rows}
+
+    def save_report_job_page(
+        self,
+        job_id: str,
+        page_number: int,
+        report: dict,
+        journal: list[dict],
+        warnings: list[str],
+        error: str | None = None,
+    ) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO report_job_pages
+                (job_id, page_number, report_json, journal_json, warnings_json, error, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id, page_number) DO UPDATE SET
+                    report_json=excluded.report_json,
+                    journal_json=excluded.journal_json,
+                    warnings_json=excluded.warnings_json,
+                    error=excluded.error,
+                    updated_at=excluded.updated_at""",
+                (
+                    job_id,
+                    page_number,
+                    json.dumps(report, ensure_ascii=False, default=str),
+                    json.dumps(journal, ensure_ascii=False, default=str),
+                    json.dumps(warnings, ensure_ascii=False),
+                    error[:2000] if error else None,
+                    now,
+                ),
+            )
+            conn.execute(
+                "UPDATE report_jobs SET current_page=?, updated_at=? WHERE id=?",
+                (page_number, now, job_id),
+            )
+
+    def report_job_pages(self, job_id: str):
+        with self.connect() as conn:
+            return conn.execute(
+                """SELECT * FROM report_job_pages WHERE job_id=?
+                ORDER BY page_number""",
+                (job_id,),
+            ).fetchall()
+
+    def finish_report_job(self, job_id: str) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """UPDATE report_jobs SET status='completed', error=NULL,
+                completed_at=?, updated_at=? WHERE id=?""",
+                (now, now, job_id),
+            )
+
+    def fail_report_job(self, job_id: str, error: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """UPDATE report_jobs SET status='failed', error=?, updated_at=?
+                WHERE id=?""",
+                (error[:2000], utc_now(), job_id),
+            )
 
     @staticmethod
     def _bump_generation(conn: sqlite3.Connection) -> None:
