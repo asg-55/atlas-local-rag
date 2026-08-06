@@ -2,10 +2,19 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
+import requests
+
 from rag_assistant.ollama_client import OllamaClient
 
 
 class OllamaClientTests(unittest.TestCase):
+    @patch("rag_assistant.ollama_client.requests.get")
+    def test_capabilities_are_optional_when_ollama_is_offline(self, get):
+        get.side_effect = requests.ConnectionError("offline")
+        client = OllamaClient("http://ollama", "qwen3.5:9b")
+
+        self.assertEqual(set(), client.capabilities("qwen3.5:9b"))
+
     @patch("rag_assistant.ollama_client.requests.post")
     def test_reads_model_context_length(self, post):
         response = Mock()

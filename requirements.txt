@@ -12,3 +12,4 @@ Pillow==11.3.0
 requests==2.32.4
 numpy==2.2.6
 lxml==6.1.1
+cryptography==49.0.0

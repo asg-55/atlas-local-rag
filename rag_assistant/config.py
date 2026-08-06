@@ -13,6 +13,7 @@ def _env_bool(name: str, default: bool) -> bool:
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path = Path(os.getenv("DATA_DIR", "data"))
+    output_dir: Path = Path(os.getenv("OUTPUT_DIR", "outputs"))
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     chat_model: str = os.getenv("CHAT_MODEL", "qwen3.5:9b")
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
@@ -52,10 +53,15 @@ class Settings:
     def index_meta_path(self) -> Path:
         return self.data_dir / "vector.index.json"
 
+    @property
+    def anonymization_dir(self) -> Path:
+        return self.output_dir / "anonymized"
+
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.documents_dir.mkdir(parents=True, exist_ok=True)
         self.chat_attachments_dir.mkdir(parents=True, exist_ok=True)
+        self.anonymization_dir.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

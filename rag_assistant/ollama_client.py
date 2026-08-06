@@ -24,11 +24,14 @@ class OllamaClient:
         return models
 
     def capabilities(self, model: str) -> set[str]:
-        response = requests.get(f"{self.base_url}/api/tags", timeout=5)
-        response.raise_for_status()
-        for item in response.json().get("models", []):
-            if item.get("name") == model:
-                return set(item.get("capabilities") or [])
+        try:
+            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            response.raise_for_status()
+            for item in response.json().get("models", []):
+                if item.get("name") == model:
+                    return set(item.get("capabilities") or [])
+        except (requests.RequestException, TypeError, ValueError):
+            return set()
         return set()
 
     def context_length(self, model: str | None = None) -> int:

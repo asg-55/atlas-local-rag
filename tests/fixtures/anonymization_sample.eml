@@ -1,0 +1,10 @@
+From: Иван Иванов <ivan.ivanov@example.ru>
+To: recipient@example.ru
+Subject: Контакт для проверки
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+ФИО: Иванов Иван Иванович
+Телефон: +7 (913) 123-45-67
+Электронная почта: ivan.ivanov@example.ru

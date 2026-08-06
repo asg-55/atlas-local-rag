@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 import html
+import io
+import zipfile
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
+from rag_assistant.anonymizer import (
+    DEFAULT_CATEGORIES,
+    ENTITY_LABELS,
+    anonymize_document,
+    find_sensitive_data,
+    restore_document,
+    save_result,
+)
 from rag_assistant.config import settings
 from rag_assistant.service import AssistantService
 from rag_assistant.report_extractor import (
@@ -443,7 +455,7 @@ st.markdown(
 )
 active_section = st.segmented_control(
     "Раздел",
-    ["Чат", "Файлы", "Отчеты в Excel", "Диагностика"],
+    ["Чат", "Файлы", "Обезличивание", "Отчеты в Excel", "Диагностика"],
     default="Чат",
     key="main-section",
     label_visibility="collapsed",
@@ -601,6 +613,272 @@ if active_section == "Файлы":
             if action_col.button("Удалить", key=f"delete-doc-{document['id']}", use_container_width=True):
                 service.delete_document(document["id"])
                 st.rerun()
+
+if active_section == "Обезличивание":
+    st.markdown(
+        "<div class='section-title'>Обратимое обезличивание</div>"
+        "<div class='section-copy'>Заменяет выбранные данные нейтральными метками, не добавляя файл в RAG. "
+        "Исходные значения хранятся только в отдельном зашифрованном ключе.</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='feature-note'><b>Два файла — две части доступа.</b> "
+        "Для восстановления нужны обезличенный документ, ключ Atlas и пароль. "
+        "Пароль нигде не сохраняется и не может быть восстановлен.</div>",
+        unsafe_allow_html=True,
+    )
+    anonymize_tab, restore_tab = st.tabs(["Обезличить", "Восстановить"])
+
+    with anonymize_tab:
+        source_file = st.file_uploader(
+            "Документ Word, Excel, PowerPoint или письмо Outlook",
+            type=["docx", "xlsx", "pptx", "eml"],
+            key="anonymize-source-file",
+            help="Старые DOC/XLS/PPT и Outlook MSG сначала сохраните в DOCX/XLSX/PPTX или EML.",
+        )
+        category_labels = {label: category for category, label in ENTITY_LABELS.items()}
+        selected_labels = st.multiselect(
+            "Какие данные искать",
+            list(category_labels),
+            default=[ENTITY_LABELS[category] for category in DEFAULT_CATEGORIES],
+            key="anonymize-categories",
+        )
+        custom_values = st.text_area(
+            "Свои значения — по одному в строке",
+            placeholder="Внутреннее название проекта\nТабельный номер\nРедкий технический идентификатор",
+            key="anonymize-custom-values",
+        )
+        categories = [category_labels[label] for label in selected_labels]
+        custom_terms = [value.strip() for value in custom_values.splitlines() if value.strip()]
+        source_bytes = source_file.getvalue() if source_file is not None else b""
+        analysis_digest = hashlib.sha256(
+            source_bytes
+            + "\0".join(sorted(categories)).encode("utf-8")
+            + "\0".join(custom_terms).encode("utf-8")
+        ).hexdigest()
+
+        if st.button(
+            "Найти конфиденциальные данные",
+            disabled=source_file is None or not categories,
+            key="scan-sensitive-data",
+        ):
+            try:
+                with st.spinner("Проверяю содержимое документа…"):
+                    findings = find_sensitive_data(
+                        source_bytes,
+                        source_file.name,
+                        categories=categories,
+                        custom_terms=custom_terms,
+                    )
+                st.session_state["anonymization-analysis"] = {
+                    "digest": analysis_digest,
+                    "findings": findings,
+                }
+            except Exception as exc:
+                st.error(f"Не удалось проверить документ: {exc}")
+
+        analysis = st.session_state.get("anonymization-analysis")
+        if analysis and analysis.get("digest") == analysis_digest:
+            findings = analysis["findings"]
+            if not findings:
+                st.info("По выбранным правилам данные не найдены. Добавьте нужные значения вручную выше.")
+            else:
+                st.caption(
+                    f"Найдено {len(findings)} уникальных значений. Проверьте список перед заменой."
+                )
+                review_frame = pd.DataFrame(
+                    [
+                        {
+                            "Заменить": True,
+                            "Тип": finding.label,
+                            "Значение": finding.value,
+                            "Совпадений": finding.occurrences,
+                            "_finding_id": index,
+                        }
+                        for index, finding in enumerate(findings)
+                    ]
+                )
+                reviewed = st.data_editor(
+                    review_frame,
+                    hide_index=True,
+                    use_container_width=True,
+                    disabled=["Тип", "Значение", "Совпадений", "_finding_id"],
+                    column_config={"_finding_id": None},
+                    key=f"anonymization-review-{analysis_digest}",
+                )
+                chosen_findings = [
+                    findings[int(row["_finding_id"])]
+                    for _, row in reviewed.iterrows()
+                    if bool(row["Заменить"])
+                ]
+                password_col, confirmation_col = st.columns(2)
+                key_password = password_col.text_input(
+                    "Пароль ключа",
+                    type="password",
+                    key="anonymization-password",
+                    help="Не менее 10 символов. Atlas не хранит этот пароль.",
+                )
+                key_confirmation = confirmation_col.text_input(
+                    "Повторите пароль",
+                    type="password",
+                    key="anonymization-password-confirmation",
+                )
+                output_subfolder = st.text_input(
+                    "Папка сохранения внутри outputs/anonymized",
+                    value="exports",
+                    key="anonymization-output-folder",
+                )
+                save_copies = st.checkbox(
+                    "Сохранить обе копии на диске Atlas",
+                    value=True,
+                    key="save-anonymized-copies",
+                )
+                if st.button(
+                    "Создать обезличенную копию и ключ",
+                    type="primary",
+                    disabled=not chosen_findings,
+                    key="run-anonymization",
+                ):
+                    if key_password != key_confirmation:
+                        st.error("Пароли не совпадают.")
+                    else:
+                        try:
+                            with st.spinner("Заменяю данные и шифрую ключ…"):
+                                result = anonymize_document(
+                                    source_bytes,
+                                    source_file.name,
+                                    chosen_findings,
+                                    key_password,
+                                )
+                                saved_paths = []
+                                if save_copies:
+                                    saved_paths = save_result(
+                                        settings.anonymization_dir,
+                                        output_subfolder,
+                                        {
+                                            result.filename: result.content,
+                                            result.key_filename: result.key_content,
+                                        },
+                                    )
+                            st.session_state["anonymization-result"] = (
+                                analysis_digest,
+                                result,
+                                saved_paths,
+                            )
+                        except Exception as exc:
+                            st.error(f"Не удалось обезличить документ: {exc}")
+
+        stored_result = st.session_state.get("anonymization-result")
+        if stored_result and source_file is not None and stored_result[0] == analysis_digest:
+            _, result, saved_paths = stored_result
+            st.success(f"Готово: выполнено замен — {result.replacements}.")
+            if saved_paths:
+                st.caption("Сохранено: " + " · ".join(str(path) for path in saved_paths))
+            archive_buffer = io.BytesIO()
+            with zipfile.ZipFile(archive_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(result.filename, result.content)
+                archive.writestr(result.key_filename, result.key_content)
+            document_col, key_col, pair_col = st.columns(3)
+            document_col.download_button(
+                "Скачать документ",
+                result.content,
+                file_name=result.filename,
+                key="download-anonymous-document",
+                use_container_width=True,
+            )
+            key_col.download_button(
+                "Скачать ключ",
+                result.key_content,
+                file_name=result.key_filename,
+                mime="application/json",
+                key="download-anonymous-key",
+                use_container_width=True,
+            )
+            pair_col.download_button(
+                "Скачать комплект ZIP",
+                archive_buffer.getvalue(),
+                file_name=f"{Path(result.filename).stem}_with_key.zip",
+                mime="application/zip",
+                key="download-anonymous-pair",
+                use_container_width=True,
+            )
+
+    with restore_tab:
+        st.caption("Загрузите обработанный обезличенный файл и соответствующий ему ключ Atlas.")
+        anonymous_file = st.file_uploader(
+            "Обезличенный документ",
+            type=["docx", "xlsx", "pptx", "eml"],
+            key="restore-source-file",
+        )
+        key_file = st.file_uploader(
+            "Ключ Atlas (.json)",
+            type=["json"],
+            key="restore-key-file",
+        )
+        restore_password = st.text_input(
+            "Пароль ключа",
+            type="password",
+            key="restore-password",
+        )
+        restore_subfolder = st.text_input(
+            "Папка сохранения внутри outputs/anonymized",
+            value="restored",
+            key="restore-output-folder",
+        )
+        save_restored = st.checkbox(
+            "Сохранить восстановленный файл на диске Atlas",
+            value=True,
+            key="save-restored-copy",
+        )
+        if st.button(
+            "Восстановить исходные значения",
+            type="primary",
+            disabled=anonymous_file is None or key_file is None,
+            key="run-restoration",
+        ):
+            try:
+                with st.spinner("Проверяю ключ и восстанавливаю значения…"):
+                    restored = restore_document(
+                        anonymous_file.getvalue(),
+                        anonymous_file.name,
+                        key_file.getvalue(),
+                        restore_password,
+                    )
+                    restored_paths = []
+                    if save_restored:
+                        restored_paths = save_result(
+                            settings.anonymization_dir,
+                            restore_subfolder,
+                            {restored.filename: restored.content},
+                        )
+                restore_digest = hashlib.sha256(
+                    anonymous_file.getvalue() + key_file.getvalue()
+                ).hexdigest()
+                st.session_state["restoration-result"] = (
+                    restore_digest,
+                    restored,
+                    restored_paths,
+                )
+            except Exception as exc:
+                st.error(f"Не удалось восстановить документ: {exc}")
+        stored_restoration = st.session_state.get("restoration-result")
+        current_restore_digest = (
+            hashlib.sha256(anonymous_file.getvalue() + key_file.getvalue()).hexdigest()
+            if anonymous_file is not None and key_file is not None
+            else None
+        )
+        if stored_restoration and stored_restoration[0] == current_restore_digest:
+            _, restored, restored_paths = stored_restoration
+            st.success(f"Значения восстановлены: {restored.replacements} замен.")
+            if restored_paths:
+                st.caption("Сохранено: " + " · ".join(str(path) for path in restored_paths))
+            st.download_button(
+                "Скачать восстановленный документ",
+                restored.content,
+                file_name=restored.filename,
+                type="primary",
+                key="download-restored-document",
+            )
 
 if active_section == "Отчеты в Excel":
     st.markdown(
