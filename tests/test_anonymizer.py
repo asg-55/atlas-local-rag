@@ -20,6 +20,7 @@ from rag_assistant.anonymizer import (
     restore_document,
     safe_output_directory,
     save_result,
+    xlsx_technical_columns,
 )
 
 
@@ -98,6 +99,52 @@ class AnonymizerTests(unittest.TestCase):
         restored = restore_document(result.content, result.filename, result.key_content, PASSWORD)
         workbook = load_workbook(io.BytesIO(restored.content))
         self.assertEqual(workbook.active["A1"].value, original)
+
+    def test_xlsx_discovers_name_columns_without_touching_values_or_formulas(self):
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Выгрузка"
+        worksheet.append(["Тег", "Наименование параметра", "Значение", "Единица"])
+        worksheet.append(["FIC-1025", "Расход пропилена", 123.45, "кг/ч"])
+        worksheet.append(["P-201A", "Давление насоса P-201A", "=C2*2", "МПа"])
+        source = io.BytesIO()
+        workbook.save(source)
+        content = source.getvalue()
+
+        columns = xlsx_technical_columns(content)
+        suggested = [column for column in columns if column.suggested]
+        self.assertEqual({column.header for column in suggested}, {"Тег", "Наименование параметра"})
+        findings = find_sensitive_data(
+            content,
+            "export.xlsx",
+            {"TECHNICAL_TAG", "TECHNICAL_NAME"},
+            technical_columns=[column.key for column in suggested],
+        )
+        values = {finding.value for finding in findings}
+        self.assertTrue({"FIC-1025", "P-201A", "Расход пропилена"}.issubset(values))
+
+        result = anonymize_document(content, "export.xlsx", findings, PASSWORD)
+        anonymous = load_workbook(io.BytesIO(result.content), data_only=False)
+        self.assertEqual(anonymous["Выгрузка"]["C2"].value, 123.45)
+        self.assertEqual(anonymous["Выгрузка"]["C3"].value, "=C2*2")
+        self.assertEqual(anonymous["Выгрузка"]["D2"].value, "кг/ч")
+        self.assertIn("ATLAS-TECHNICAL", anonymous["Выгрузка"]["A2"].value)
+
+        restored = restore_document(result.content, result.filename, result.key_content, PASSWORD)
+        restored_book = load_workbook(io.BytesIO(restored.content), data_only=False)
+        self.assertEqual(restored_book["Выгрузка"]["A2"].value, "FIC-1025")
+        self.assertEqual(restored_book["Выгрузка"]["B3"].value, "Давление насоса P-201A")
+        self.assertEqual(restored_book["Выгрузка"]["C3"].value, "=C2*2")
+
+    def test_technical_tag_pattern_does_not_select_plain_numbers(self):
+        content = _docx_bytes("Аппараты D228 и УПП-2. Давление 12.5, температура 80.")
+        findings = find_sensitive_data(
+            content,
+            "scheme.docx",
+            {"TECHNICAL_TAG"},
+            detect_technical_tags=True,
+        )
+        self.assertEqual({finding.value for finding in findings}, {"D228", "УПП-2"})
 
     def test_pptx_and_eml_are_supported(self):
         presentation = _pptx_bytes("Связаться: analyst@example.ru")

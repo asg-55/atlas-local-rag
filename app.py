@@ -17,6 +17,7 @@ from rag_assistant.anonymizer import (
     find_sensitive_data,
     restore_document,
     save_result,
+    xlsx_technical_columns,
 )
 from rag_assistant.config import settings
 from rag_assistant.service import AssistantService
@@ -220,6 +221,11 @@ def available_models(_client) -> list[str]:
         return _client.models()
     except Exception:
         return [settings.chat_model]
+
+
+@st.cache_data(show_spinner=False)
+def discover_technical_columns(content: bytes):
+    return xlsx_technical_columns(content)
 
 
 def ensure_conversation() -> str:
@@ -651,10 +657,44 @@ if active_section == "Обезличивание":
         categories = [category_labels[label] for label in selected_labels]
         custom_terms = [value.strip() for value in custom_values.splitlines() if value.strip()]
         source_bytes = source_file.getvalue() if source_file is not None else b""
+        detect_technical_tags = st.checkbox(
+            "Автоматически находить технические теги во всём документе",
+            value=True,
+            key="detect-technical-tags",
+            help="Например: FIC-1025, P-201A, D228, УПП-2. Числа без букв не выбираются.",
+        )
+        technical_column_keys: list[str] = []
+        if source_file is not None and Path(source_file.name).suffix.lower() == ".xlsx":
+            try:
+                workbook_columns = discover_technical_columns(source_bytes)
+                column_by_label = {column.label: column.key for column in workbook_columns}
+                suggested_columns = [column.label for column in workbook_columns if column.suggested]
+                selected_column_labels = st.multiselect(
+                    "Столбцы с тегами и названиями",
+                    list(column_by_label),
+                    default=suggested_columns,
+                    key=f"technical-columns-{hashlib.sha256(source_bytes).hexdigest()}",
+                    help="Atlas предложил столбцы по заголовкам. Значения и формулы из остальных колонок не изменяются.",
+                )
+                technical_column_keys = [column_by_label[label] for label in selected_column_labels]
+                if suggested_columns:
+                    st.caption(
+                        f"Автоматически предложено столбцов: {len(suggested_columns)}. "
+                        "Проверьте выбор: все текстовые строки ниже заголовков будут считаться названиями."
+                    )
+                else:
+                    st.info(
+                        "Atlas не нашёл очевидных заголовков. Выберите нужные столбцы из списка — "
+                        "вводить каждое название отдельно не требуется."
+                    )
+            except Exception as exc:
+                st.warning(f"Не удалось определить столбцы XLSX: {exc}")
         analysis_digest = hashlib.sha256(
             source_bytes
             + "\0".join(sorted(categories)).encode("utf-8")
             + "\0".join(custom_terms).encode("utf-8")
+            + "\0".join(sorted(technical_column_keys)).encode("utf-8")
+            + str(detect_technical_tags).encode("ascii")
         ).hexdigest()
 
         if st.button(
@@ -669,6 +709,8 @@ if active_section == "Обезличивание":
                         source_file.name,
                         categories=categories,
                         custom_terms=custom_terms,
+                        technical_columns=technical_column_keys,
+                        detect_technical_tags=detect_technical_tags,
                     )
                 st.session_state["anonymization-analysis"] = {
                     "digest": analysis_digest,

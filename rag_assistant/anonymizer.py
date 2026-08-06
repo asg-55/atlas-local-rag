@@ -17,6 +17,8 @@ from typing import Iterable, Sequence
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 from lxml import etree
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 
 KEY_FORMAT = "atlas-anonymization-key"
@@ -35,6 +37,8 @@ ENTITY_LABELS = {
     "IP_ADDRESS": "IP-адрес",
     "ADDRESS": "Адрес",
     "ORGANIZATION": "Организация",
+    "TECHNICAL_TAG": "Технический тег",
+    "TECHNICAL_NAME": "Техническое наименование",
     "CUSTOM": "Пользовательское значение",
 }
 DEFAULT_CATEGORIES = list(ENTITY_LABELS)
@@ -74,6 +78,24 @@ class _PatternSpec:
     regex: re.Pattern[str]
     group: int = 0
     validator: object | None = None
+
+
+@dataclass(frozen=True)
+class TechnicalColumn:
+    key: str
+    label: str
+    sheet: str
+    column: int
+    header_row: int
+    header: str
+    suggested: bool
+    examples: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ReplacementPlan:
+    lookup: dict[str, str]
+    pattern: re.Pattern[str]
 
 
 def _luhn_valid(value: str) -> bool:
@@ -146,6 +168,139 @@ PATTERNS = [
         group=1,
     ),
 ]
+
+TECHNICAL_TAG_PATTERN = re.compile(
+    r"(?<![\w-])[A-ZА-ЯЁ]{1,10}[-_]?\d{1,6}[A-ZА-ЯЁ]?(?![\w-])",
+    re.I,
+)
+TECHNICAL_HEADER_HINT = re.compile(
+    r"(?:тег|tag|позици|обозначен|наименован|назван|параметр|сигнал|контур|узел|"
+    r"оборудован|аппарат|агрегат|установк|линия|секция|колонн|реактор|насос)",
+    re.I,
+)
+TECHNICAL_HEADER_EXCLUDE = re.compile(
+    r"(?:значени|value|единиц|unit|дата|date|время|time|уставк|setpoint|"
+    r"миним|максим|давлен|температур|расход|уровень|скорость|мощност)",
+    re.I,
+)
+
+
+def _meaningful_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not 2 <= len(text) <= 240 or text.startswith("="):
+        return None
+    if re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?(?:\s*[%°])?", text):
+        return None
+    return text
+
+
+def xlsx_technical_columns(content: bytes) -> list[TechnicalColumn]:
+    try:
+        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=False)
+    except Exception as exc:
+        raise ValueError("Не удалось прочитать структуру XLSX.") from exc
+    result: list[TechnicalColumn] = []
+    try:
+        for worksheet in workbook.worksheets:
+            max_column = min(worksheet.max_column or 0, 512)
+            if max_column == 0:
+                continue
+            sampled_rows = list(
+                worksheet.iter_rows(
+                    min_row=1,
+                    max_row=min(worksheet.max_row or 1, 20),
+                    max_col=max_column,
+                    values_only=True,
+                )
+            )
+            header_candidates: list[tuple[int, int, int]] = []
+            for row_number, row in enumerate(sampled_rows, start=1):
+                texts = [_meaningful_text(value) for value in row]
+                hint_count = sum(bool(text and TECHNICAL_HEADER_HINT.search(text)) for text in texts)
+                text_count = sum(bool(text) for text in texts)
+                if text_count:
+                    header_candidates.append((hint_count, text_count, -row_number))
+            if not header_candidates:
+                continue
+            _, _, negative_row = max(header_candidates)
+            header_row = -negative_row
+            headers = sampled_rows[header_row - 1]
+            example_values: dict[int, list[str]] = {index: [] for index in range(1, max_column + 1)}
+            for row in worksheet.iter_rows(
+                min_row=header_row + 1,
+                max_row=min(worksheet.max_row or header_row, header_row + 500),
+                max_col=max_column,
+                values_only=True,
+            ):
+                for index, value in enumerate(row, start=1):
+                    text = _meaningful_text(value)
+                    if text and len(example_values[index]) < 3 and text not in example_values[index]:
+                        example_values[index].append(text)
+            for column in range(1, max_column + 1):
+                header = _meaningful_text(headers[column - 1]) or get_column_letter(column)
+                examples = tuple(example_values[column])
+                if not examples:
+                    continue
+                suggested = bool(TECHNICAL_HEADER_HINT.search(header)) and not bool(
+                    TECHNICAL_HEADER_EXCLUDE.search(header)
+                )
+                column_letter = get_column_letter(column)
+                key = f"{worksheet.title}\x1f{column}\x1f{header_row}"
+                example_caption = "; ".join(examples[:2])
+                result.append(
+                    TechnicalColumn(
+                        key=key,
+                        label=f"{worksheet.title} · {column_letter} · {header} — {example_caption}",
+                        sheet=worksheet.title,
+                        column=column,
+                        header_row=header_row,
+                        header=header,
+                        suggested=suggested,
+                        examples=examples,
+                    )
+                )
+    finally:
+        workbook.close()
+    return result
+
+
+def _xlsx_column_terms(content: bytes, selected_columns: Iterable[str]) -> list[tuple[str, int]]:
+    selected = set(selected_columns)
+    if not selected:
+        return []
+    workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=False)
+    terms: dict[str, tuple[str, int]] = {}
+    try:
+        for worksheet in workbook.worksheets:
+            configured: dict[int, int] = {}
+            for key in selected:
+                parts = key.split("\x1f")
+                if len(parts) == 3 and parts[0] == worksheet.title:
+                    configured[int(parts[1])] = int(parts[2])
+            if not configured:
+                continue
+            first_data_row = min(configured.values()) + 1
+            for row_number, row in enumerate(
+                worksheet.iter_rows(
+                    min_row=first_data_row,
+                    max_col=max(configured),
+                    values_only=True,
+                ),
+                start=first_data_row,
+            ):
+                for column, header_row in configured.items():
+                    if row_number <= header_row:
+                        continue
+                    text = _meaningful_text(row[column - 1])
+                    if text:
+                        folded = text.casefold()
+                        original, count = terms.get(folded, (text, 0))
+                        terms[folded] = (original, count + 1)
+    finally:
+        workbook.close()
+    return list(terms.values())
 
 
 def _extension(filename: str) -> str:
@@ -236,6 +391,8 @@ def find_sensitive_data(
     filename: str,
     categories: Iterable[str] | None = None,
     custom_terms: Iterable[str] | None = None,
+    technical_columns: Iterable[str] | None = None,
+    detect_technical_tags: bool = True,
 ) -> list[Finding]:
     enabled = set(categories or DEFAULT_CATEGORIES)
     texts = extract_texts(content, filename)
@@ -251,6 +408,20 @@ def find_sensitive_data(
             key = (spec.category, value)
             count, first = found.get(key, (0, match.start(spec.group)))
             found[key] = (count + 1, min(first, match.start(spec.group)))
+    column_terms: list[tuple[str, int]] = []
+    if "TECHNICAL_NAME" in enabled and Path(filename).suffix.lower() == ".xlsx":
+        column_terms = _xlsx_column_terms(content, technical_columns or [])
+        for position, (value, count) in enumerate(column_terms, start=len(combined) + 1):
+            found[("TECHNICAL_NAME", value)] = (count, position)
+    if "TECHNICAL_TAG" in enabled and detect_technical_tags:
+        full_column_values = {value.casefold() for value, _ in column_terms}
+        for match in TECHNICAL_TAG_PATTERN.finditer(combined):
+            value = match.group(0).strip()
+            if value.casefold() in full_column_values:
+                continue
+            key = ("TECHNICAL_TAG", value)
+            count, first = found.get(key, (0, match.start()))
+            found[key] = (count + 1, min(first, match.start()))
     if "CUSTOM" in enabled:
         for term in custom_terms or []:
             value = term.strip()
@@ -265,30 +436,34 @@ def find_sensitive_data(
     )
 
 
-def _matches(text: str, replacements: dict[str, str]) -> list[tuple[int, int, str]]:
-    candidates: list[tuple[int, int, str]] = []
-    occupied: list[tuple[int, int]] = []
-    for original in sorted(replacements, key=len, reverse=True):
-        for match in re.finditer(re.escape(original), text, re.I):
-            start, end = match.span()
-            if any(start < other_end and end > other_start for other_start, other_end in occupied):
-                continue
-            occupied.append((start, end))
-            candidates.append((start, end, replacements[original]))
-    return sorted(candidates, reverse=True)
+def _replacement_plan(replacements: dict[str, str]) -> _ReplacementPlan:
+    originals = sorted(replacements, key=len, reverse=True)
+    if not originals:
+        raise ValueError("Не выбрано ни одного значения для замены.")
+    return _ReplacementPlan(
+        lookup={original.casefold(): replacement for original, replacement in replacements.items()},
+        pattern=re.compile("|".join(re.escape(original) for original in originals), re.I),
+    )
 
 
-def _replace_text(text: str, replacements: dict[str, str]) -> tuple[str, int]:
-    matches = _matches(text, replacements)
+def _matches(text: str, plan: _ReplacementPlan) -> list[tuple[int, int, str]]:
+    return [
+        (match.start(), match.end(), plan.lookup[match.group(0).casefold()])
+        for match in reversed(list(plan.pattern.finditer(text)))
+    ]
+
+
+def _replace_text(text: str, plan: _ReplacementPlan) -> tuple[str, int]:
+    matches = _matches(text, plan)
     for start, end, placeholder in matches:
         text = text[:start] + placeholder + text[end:]
     return text, len(matches)
 
 
-def _replace_nodes(nodes: Sequence[etree._Element], replacements: dict[str, str]) -> int:
+def _replace_nodes(nodes: Sequence[etree._Element], plan: _ReplacementPlan) -> int:
     original_parts = [node.text or "" for node in nodes]
     combined = "".join(original_parts)
-    matches = _matches(combined, replacements)
+    matches = _matches(combined, plan)
     if not matches:
         return 0
     starts: list[int] = []
@@ -314,7 +489,7 @@ def _replace_nodes(nodes: Sequence[etree._Element], replacements: dict[str, str]
     return len(matches)
 
 
-def _transform_office(content: bytes, extension: str, replacements: dict[str, str]) -> tuple[bytes, int]:
+def _transform_office(content: bytes, extension: str, plan: _ReplacementPlan) -> tuple[bytes, int]:
     source = io.BytesIO(content)
     target = io.BytesIO()
     total = 0
@@ -326,7 +501,7 @@ def _transform_office(content: bytes, extension: str, replacements: dict[str, st
                     root = etree.fromstring(data)
                     changed = 0
                     for nodes in _text_groups(root, extension):
-                        changed += _replace_nodes(nodes, replacements)
+                        changed += _replace_nodes(nodes, plan)
                     if changed:
                         data = etree.tostring(root, encoding="UTF-8", xml_declaration=True, standalone=None)
                         total += changed
@@ -336,7 +511,7 @@ def _transform_office(content: bytes, extension: str, replacements: dict[str, st
     return target.getvalue(), total
 
 
-def _replace_eml_message(message: Message, replacements: dict[str, str]) -> int:
+def _replace_eml_message(message: Message, plan: _ReplacementPlan) -> int:
     total = 0
     for header in ("from", "to", "cc", "bcc", "reply-to", "subject"):
         values = message.get_all(header, [])
@@ -344,7 +519,7 @@ def _replace_eml_message(message: Message, replacements: dict[str, str]) -> int:
             continue
         del message[header]
         for value in values:
-            updated, count = _replace_text(str(value), replacements)
+            updated, count = _replace_text(str(value), plan)
             message[header] = updated
             total += count
     for part in message.walk():
@@ -355,7 +530,7 @@ def _replace_eml_message(message: Message, replacements: dict[str, str]) -> int:
                 current = part.get_content()
             except (LookupError, UnicodeDecodeError):
                 continue
-            updated, count = _replace_text(current, replacements)
+            updated, count = _replace_text(current, plan)
             if count:
                 subtype = part.get_content_subtype()
                 charset = part.get_content_charset() or "utf-8"
@@ -367,7 +542,7 @@ def _replace_eml_message(message: Message, replacements: dict[str, str]) -> int:
         if extension not in {".docx", ".xlsx", ".pptx"}:
             continue
         payload = part.get_payload(decode=True) or b""
-        updated, count = _transform_office(payload, extension, replacements)
+        updated, count = _transform_office(payload, extension, plan)
         if count:
             part.set_payload(base64.b64encode(updated).decode("ascii"))
             if part.get("Content-Transfer-Encoding"):
@@ -380,10 +555,11 @@ def _replace_eml_message(message: Message, replacements: dict[str, str]) -> int:
 
 def _transform_document(content: bytes, filename: str, replacements: dict[str, str]) -> tuple[bytes, int]:
     extension = _extension(filename)
+    plan = _replacement_plan(replacements)
     if extension != ".eml":
-        return _transform_office(content, extension, replacements)
+        return _transform_office(content, extension, plan)
     message = BytesParser(policy=policy.default).parsebytes(content)
-    count = _replace_eml_message(message, replacements)
+    count = _replace_eml_message(message, plan)
     return message.as_bytes(policy=policy.default), count
 
 
