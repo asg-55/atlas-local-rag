@@ -170,8 +170,23 @@ PATTERNS = [
 ]
 
 TECHNICAL_TAG_PATTERN = re.compile(
-    r"(?<![\w-])[A-ZА-ЯЁ]{1,10}[-_]?\d{1,6}[A-ZА-ЯЁ]?(?![\w-])",
-    re.I,
+    r"""
+    (?<![\w-])
+    (?!ATLAS-)
+    (?:
+        (?:\d{1,3}\s+)?[A-ZАВЕКМНОРСТХУ]{2,12}\s+\d{1,8}[A-ZА-ЯЁ]?
+        |
+        [A-ZА-ЯЁ]{1,12}
+        (?=[A-ZА-ЯЁ0-9_-]{1,50}\d)
+        (?:[-_][A-ZА-ЯЁ0-9]+){1,6}
+        |
+        [A-ZА-ЯЁ]{1,12}\d{1,8}[A-ZА-ЯЁ]?
+    )
+    (?:\.[A-ZА-ЯЁ]{1,8})?
+    (?:/\d{1,4}(?:-\d{1,4})?)?
+    (?![\w-])
+    """,
+    re.X,
 )
 TECHNICAL_HEADER_HINT = re.compile(
     r"(?:тег|tag|позици|обозначен|наименован|назван|параметр|сигнал|контур|узел|"
@@ -713,31 +728,3 @@ def restore_document(
     source_name = Path(payload.get("source_filename") or filename).name
     output_name = f"{Path(source_name).stem}_restored{extension}"
     return RestoredResult(output_name, restored, count)
-
-
-def safe_output_directory(base: Path, subfolder: str) -> Path:
-    raw_parts = [part for part in re.split(r"[\\/]", subfolder.strip()) if part]
-    if any(part in {".", ".."} or re.search(r"[<>:\"|?*]", part) for part in raw_parts):
-        raise ValueError("Недопустимое имя папки.")
-    clean_parts = raw_parts or ["exports"]
-    target = base.joinpath(*clean_parts).resolve()
-    root = base.resolve()
-    if target != root and root not in target.parents:
-        raise ValueError("Папка должна находиться внутри каталога экспорта Atlas.")
-    target.mkdir(parents=True, exist_ok=True)
-    return target
-
-
-def save_result(base: Path, subfolder: str, files: dict[str, bytes]) -> list[Path]:
-    target = safe_output_directory(base, subfolder)
-    prepared = [(target / Path(filename).name, content) for filename, content in files.items()]
-    existing = [path.name for path, _ in prepared if path.exists()]
-    if existing:
-        raise FileExistsError(
-            "Файл уже существует: " + ", ".join(existing) + ". Выберите другую папку сохранения."
-        )
-    paths = []
-    for path, content in prepared:
-        path.write_bytes(content)
-        paths.append(path)
-    return paths

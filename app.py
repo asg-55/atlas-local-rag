@@ -16,7 +16,6 @@ from rag_assistant.anonymizer import (
     anonymize_document,
     find_sensitive_data,
     restore_document,
-    save_result,
     xlsx_technical_columns,
 )
 from rag_assistant.config import settings
@@ -766,16 +765,6 @@ if active_section == "Обезличивание":
                     type="password",
                     key="anonymization-password-confirmation",
                 )
-                output_subfolder = st.text_input(
-                    "Папка сохранения внутри outputs/anonymized",
-                    value="exports",
-                    key="anonymization-output-folder",
-                )
-                save_copies = st.checkbox(
-                    "Сохранить обе копии на диске Atlas",
-                    value=True,
-                    key="save-anonymized-copies",
-                )
                 if st.button(
                     "Создать обезличенную копию и ключ",
                     type="primary",
@@ -793,30 +782,20 @@ if active_section == "Обезличивание":
                                     chosen_findings,
                                     key_password,
                                 )
-                                saved_paths = []
-                                if save_copies:
-                                    saved_paths = save_result(
-                                        settings.anonymization_dir,
-                                        output_subfolder,
-                                        {
-                                            result.filename: result.content,
-                                            result.key_filename: result.key_content,
-                                        },
-                                    )
                             st.session_state["anonymization-result"] = (
                                 analysis_digest,
                                 result,
-                                saved_paths,
                             )
                         except Exception as exc:
                             st.error(f"Не удалось обезличить документ: {exc}")
 
         stored_result = st.session_state.get("anonymization-result")
         if stored_result and source_file is not None and stored_result[0] == analysis_digest:
-            _, result, saved_paths = stored_result
+            _, result = stored_result
             st.success(f"Готово: выполнено замен — {result.replacements}.")
-            if saved_paths:
-                st.caption("Сохранено: " + " · ".join(str(path) for path in saved_paths))
+            st.caption(
+                "Atlas не сохраняет результат на диске. Скачайте комплект ZIP до обновления страницы."
+            )
             archive_buffer = io.BytesIO()
             with zipfile.ZipFile(archive_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr(result.filename, result.content)
@@ -863,16 +842,6 @@ if active_section == "Обезличивание":
             type="password",
             key="restore-password",
         )
-        restore_subfolder = st.text_input(
-            "Папка сохранения внутри outputs/anonymized",
-            value="restored",
-            key="restore-output-folder",
-        )
-        save_restored = st.checkbox(
-            "Сохранить восстановленный файл на диске Atlas",
-            value=True,
-            key="save-restored-copy",
-        )
         if st.button(
             "Восстановить исходные значения",
             type="primary",
@@ -887,20 +856,12 @@ if active_section == "Обезличивание":
                         key_file.getvalue(),
                         restore_password,
                     )
-                    restored_paths = []
-                    if save_restored:
-                        restored_paths = save_result(
-                            settings.anonymization_dir,
-                            restore_subfolder,
-                            {restored.filename: restored.content},
-                        )
                 restore_digest = hashlib.sha256(
                     anonymous_file.getvalue() + key_file.getvalue()
                 ).hexdigest()
                 st.session_state["restoration-result"] = (
                     restore_digest,
                     restored,
-                    restored_paths,
                 )
             except Exception as exc:
                 st.error(f"Не удалось восстановить документ: {exc}")
@@ -911,10 +872,9 @@ if active_section == "Обезличивание":
             else None
         )
         if stored_restoration and stored_restoration[0] == current_restore_digest:
-            _, restored, restored_paths = stored_restoration
+            _, restored = stored_restoration
             st.success(f"Значения восстановлены: {restored.replacements} замен.")
-            if restored_paths:
-                st.caption("Сохранено: " + " · ".join(str(path) for path in restored_paths))
+            st.caption("Восстановленный файл не сохраняется в Atlas — скачайте его сейчас.")
             st.download_button(
                 "Скачать восстановленный документ",
                 restored.content,

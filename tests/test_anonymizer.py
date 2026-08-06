@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import io
 import json
-import tempfile
 import unittest
 import zipfile
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
-from pathlib import Path
 
 from docx import Document
 from openpyxl import Workbook, load_workbook
@@ -18,8 +16,6 @@ from rag_assistant.anonymizer import (
     anonymize_document,
     find_sensitive_data,
     restore_document,
-    safe_output_directory,
-    save_result,
     xlsx_technical_columns,
 )
 
@@ -166,14 +162,31 @@ class AnonymizerTests(unittest.TestCase):
         self.assertEqual(restored_book["Выгрузка"]["D3"].value, "=D2*2")
 
     def test_technical_tag_pattern_does_not_select_plain_numbers(self):
-        content = _docx_bytes("Аппараты D228 и УПП-2. Давление 12.5, температура 80.")
+        content = _docx_bytes(
+            "Аппараты D228, УПП-2, TIR_4_123, TR-3-4-9, PIRA-2-172/4, "
+            "TRA_G202, B-TIR-05A, QIRA_101_5.PV и 18 TIR 75D. "
+            "Давление 12.5, температура 80, ГОСТ 123."
+        )
         findings = find_sensitive_data(
             content,
             "scheme.docx",
             {"TECHNICAL_TAG"},
             detect_technical_tags=True,
         )
-        self.assertEqual({finding.value for finding in findings}, {"D228", "УПП-2"})
+        self.assertEqual(
+            {finding.value for finding in findings},
+            {
+                "D228",
+                "УПП-2",
+                "TIR_4_123",
+                "TR-3-4-9",
+                "PIRA-2-172/4",
+                "TRA_G202",
+                "B-TIR-05A",
+                "QIRA_101_5.PV",
+                "18 TIR 75D",
+            },
+        )
 
     def test_pptx_and_eml_are_supported(self):
         presentation = _pptx_bytes("Связаться: analyst@example.ru")
@@ -204,7 +217,7 @@ class AnonymizerTests(unittest.TestCase):
         self.assertEqual(str(restored_message["To"]), "receiver@example.ru")
         self.assertIn("receiver@example.ru", restored_message.get_content())
 
-    def test_wrong_password_and_unsafe_output_are_rejected(self):
+    def test_wrong_password_and_hostile_key_are_rejected(self):
         content = _docx_bytes("Почта secret@example.ru")
         result = anonymize_document(
             content,
@@ -224,14 +237,6 @@ class AnonymizerTests(unittest.TestCase):
                 json.dumps(hostile_key).encode("utf-8"),
                 PASSWORD,
             )
-
-        with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaisesRegex(ValueError, "Недопустимое имя"):
-                safe_output_directory(Path(temporary), "../outside")
-            save_result(Path(temporary), "exports", {"result.txt": b"first"})
-            with self.assertRaisesRegex(FileExistsError, "уже существует"):
-                save_result(Path(temporary), "exports", {"result.txt": b"second"})
-            self.assertEqual((Path(temporary) / "exports" / "result.txt").read_bytes(), b"first")
 
 
 if __name__ == "__main__":

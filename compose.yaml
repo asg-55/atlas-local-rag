@@ -10,7 +10,6 @@ services:
       - "${HOST_BIND:-127.0.0.1}:${APP_PORT:-8501}:8501"
     environment:
       DATA_DIR: /app/data
-      OUTPUT_DIR: /app/outputs
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       CHAT_MODEL: ${CHAT_MODEL:-qwen3.5:9b}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-base}
@@ -25,7 +24,6 @@ services:
     volumes:
       - ./data:/app/data
       - ./model_cache:/models
-      - ./outputs:/app/outputs
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
