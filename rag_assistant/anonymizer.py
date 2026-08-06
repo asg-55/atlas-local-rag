@@ -754,7 +754,8 @@ def restore_document(
 ) -> RestoredResult:
     payload = _decrypt_key(key_content, password)
     extension = _extension(filename)
-    if extension != payload.get("source_extension"):
+    source_extension = payload.get("source_extension")
+    if extension != source_extension and extension not in TEXT_EXTENSIONS:
         raise ValueError("Расширение обрабатываемого файла не совпадает с ключом.")
     mapping = payload.get("mapping")
     if not isinstance(mapping, dict) or not mapping:
@@ -762,6 +763,10 @@ def restore_document(
     restored, count = _transform_document(content, filename, mapping)
     if count == 0:
         raise ValueError("В файле не найдены метки из выбранного ключа.")
-    source_name = Path(payload.get("source_filename") or filename).name
+    source_name = (
+        Path(payload.get("source_filename") or filename).name
+        if extension == source_extension
+        else Path(filename).name
+    )
     output_name = f"{Path(source_name).stem}_restored{extension}"
     return RestoredResult(output_name, restored, count)
