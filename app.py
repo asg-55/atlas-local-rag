@@ -670,22 +670,23 @@ if active_section == "Обезличивание":
                 column_by_label = {column.label: column.key for column in workbook_columns}
                 suggested_columns = [column.label for column in workbook_columns if column.suggested]
                 selected_column_labels = st.multiselect(
-                    "Столбцы с тегами и названиями",
+                    "Столбцы с названиями технологических объектов",
                     list(column_by_label),
                     default=suggested_columns,
                     key=f"technical-columns-{hashlib.sha256(source_bytes).hexdigest()}",
-                    help="Atlas предложил столбцы по заголовкам. Значения и формулы из остальных колонок не изменяются.",
+                    help="Целиком заменяются только значения из выбранных колонок: узлы, оборудование, позиции и теги. Описания параметров не выбирайте.",
                 )
                 technical_column_keys = [column_by_label[label] for label in selected_column_labels]
                 if suggested_columns:
                     st.caption(
                         f"Автоматически предложено столбцов: {len(suggested_columns)}. "
-                        "Проверьте выбор: все текстовые строки ниже заголовков будут считаться названиями."
+                        "Названия параметров, значения, формулы и единицы измерения останутся; "
+                        "внутри них заменятся только известные объекты и теги."
                     )
                 else:
                     st.info(
-                        "Atlas не нашёл очевидных заголовков. Выберите нужные столбцы из списка — "
-                        "вводить каждое название отдельно не требуется."
+                        "Atlas не нашёл очевидных колонок объектов. При необходимости выберите столбцы "
+                        "с узлами, оборудованием или позициями. Колонки с описаниями параметров не выбирайте."
                     )
             except Exception as exc:
                 st.warning(f"Не удалось определить столбцы XLSX: {exc}")

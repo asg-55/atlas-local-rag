@@ -104,16 +104,26 @@ class AnonymizerTests(unittest.TestCase):
         workbook = Workbook()
         worksheet = workbook.active
         worksheet.title = "Выгрузка"
-        worksheet.append(["Тег", "Наименование параметра", "Значение", "Единица"])
-        worksheet.append(["FIC-1025", "Расход пропилена", 123.45, "кг/ч"])
-        worksheet.append(["P-201A", "Давление насоса P-201A", "=C2*2", "МПа"])
+        worksheet.append(["Узел", "Тег", "Наименование параметра", "Значение", "Единица"])
+        worksheet.append(
+            [
+                "Установка полимеризации",
+                "FIC-1025",
+                "Расход пропилена — Установка полимеризации",
+                123.45,
+                "кг/ч",
+            ]
+        )
+        worksheet.append(
+            ["Насос катализатора", "P-201A", "Давление насоса P-201A", "=D2*2", "МПа"]
+        )
         source = io.BytesIO()
         workbook.save(source)
         content = source.getvalue()
 
         columns = xlsx_technical_columns(content)
         suggested = [column for column in columns if column.suggested]
-        self.assertEqual({column.header for column in suggested}, {"Тег", "Наименование параметра"})
+        self.assertEqual({column.header for column in suggested}, {"Узел", "Тег"})
         findings = find_sensitive_data(
             content,
             "export.xlsx",
@@ -121,20 +131,39 @@ class AnonymizerTests(unittest.TestCase):
             technical_columns=[column.key for column in suggested],
         )
         values = {finding.value for finding in findings}
-        self.assertTrue({"FIC-1025", "P-201A", "Расход пропилена"}.issubset(values))
+        self.assertTrue(
+            {"Установка полимеризации", "Насос катализатора", "FIC-1025", "P-201A"}.issubset(
+                values
+            )
+        )
+        self.assertNotIn("Расход пропилена — Установка полимеризации", values)
+        self.assertNotIn("Давление насоса P-201A", values)
 
         result = anonymize_document(content, "export.xlsx", findings, PASSWORD)
         anonymous = load_workbook(io.BytesIO(result.content), data_only=False)
-        self.assertEqual(anonymous["Выгрузка"]["C2"].value, 123.45)
-        self.assertEqual(anonymous["Выгрузка"]["C3"].value, "=C2*2")
-        self.assertEqual(anonymous["Выгрузка"]["D2"].value, "кг/ч")
+        self.assertEqual(anonymous["Выгрузка"]["D2"].value, 123.45)
+        self.assertEqual(anonymous["Выгрузка"]["D3"].value, "=D2*2")
+        self.assertEqual(anonymous["Выгрузка"]["E2"].value, "кг/ч")
         self.assertIn("ATLAS-TECHNICAL", anonymous["Выгрузка"]["A2"].value)
+        self.assertRegex(
+            anonymous["Выгрузка"]["C2"].value,
+            r"^Расход пропилена — ATLAS-TECHNICAL_NAME-\d+$",
+        )
+        self.assertRegex(
+            anonymous["Выгрузка"]["C3"].value,
+            r"^Давление насоса ATLAS-TECHNICAL_NAME-\d+$",
+        )
 
         restored = restore_document(result.content, result.filename, result.key_content, PASSWORD)
         restored_book = load_workbook(io.BytesIO(restored.content), data_only=False)
-        self.assertEqual(restored_book["Выгрузка"]["A2"].value, "FIC-1025")
-        self.assertEqual(restored_book["Выгрузка"]["B3"].value, "Давление насоса P-201A")
-        self.assertEqual(restored_book["Выгрузка"]["C3"].value, "=C2*2")
+        self.assertEqual(restored_book["Выгрузка"]["A2"].value, "Установка полимеризации")
+        self.assertEqual(restored_book["Выгрузка"]["B2"].value, "FIC-1025")
+        self.assertEqual(
+            restored_book["Выгрузка"]["C2"].value,
+            "Расход пропилена — Установка полимеризации",
+        )
+        self.assertEqual(restored_book["Выгрузка"]["C3"].value, "Давление насоса P-201A")
+        self.assertEqual(restored_book["Выгрузка"]["D3"].value, "=D2*2")
 
     def test_technical_tag_pattern_does_not_select_plain_numbers(self):
         content = _docx_bytes("Аппараты D228 и УПП-2. Давление 12.5, температура 80.")

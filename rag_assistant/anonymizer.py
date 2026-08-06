@@ -178,8 +178,14 @@ TECHNICAL_HEADER_HINT = re.compile(
     r"оборудован|аппарат|агрегат|установк|линия|секция|колонн|реактор|насос)",
     re.I,
 )
+TECHNICAL_OBJECT_HEADER_HINT = re.compile(
+    r"(?:тег|tag|позици|обозначен|контур|узел|оборудован|аппарат|агрегат|"
+    r"установк|линия|секция|колонн|реактор|насос|объект)",
+    re.I,
+)
+TECHNICAL_TAG_HEADER_HINT = re.compile(r"(?:\btag\b|тег)", re.I)
 TECHNICAL_HEADER_EXCLUDE = re.compile(
-    r"(?:значени|value|единиц|unit|дата|date|время|time|уставк|setpoint|"
+    r"(?:параметр|сигнал|описан|значени|value|единиц|unit|дата|date|время|time|уставк|setpoint|"
     r"миним|максим|давлен|температур|расход|уровень|скорость|мощност)",
     re.I,
 )
@@ -243,8 +249,9 @@ def xlsx_technical_columns(content: bytes) -> list[TechnicalColumn]:
                 examples = tuple(example_values[column])
                 if not examples:
                     continue
-                suggested = bool(TECHNICAL_HEADER_HINT.search(header)) and not bool(
-                    TECHNICAL_HEADER_EXCLUDE.search(header)
+                is_tag_column = bool(TECHNICAL_TAG_HEADER_HINT.search(header))
+                suggested = bool(TECHNICAL_OBJECT_HEADER_HINT.search(header)) and (
+                    is_tag_column or not bool(TECHNICAL_HEADER_EXCLUDE.search(header))
                 )
                 column_letter = get_column_letter(column)
                 key = f"{worksheet.title}\x1f{column}\x1f{header_row}"
