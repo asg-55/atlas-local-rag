@@ -263,7 +263,7 @@ class AnonymizerTests(unittest.TestCase):
                 )
                 self.assertEqual(restored.content, content)
 
-    def test_office_key_restores_placeholders_in_processed_json(self):
+    def test_office_key_restores_placeholders_in_processed_outputs(self):
         original = "TIR_4_123 operator@example.ru"
         content = _xlsx_bytes(original)
         findings = find_sensitive_data(content, "signals.xlsx", {"EMAIL", "TECHNICAL_TAG"})
@@ -285,13 +285,16 @@ class AnonymizerTests(unittest.TestCase):
 
         self.assertEqual(json.loads(restored.content)["answer"], original)
         self.assertEqual(restored.filename, "Replay_result_restored.json")
-        with self.assertRaisesRegex(ValueError, "не совпадает с ключом"):
-            restore_document(
-                _docx_bytes(anonymous_value),
-                "wrong.docx",
-                result.key_content,
-                PASSWORD,
-            )
+
+        processed_docx = _docx_bytes(f"Готовый отчёт: {anonymous_value}")
+        restored_docx = restore_document(
+            processed_docx,
+            "Replay_report.docx",
+            result.key_content,
+            PASSWORD,
+        )
+        self.assertEqual(_docx_text(restored_docx.content), f"Готовый отчёт: {original}")
+        self.assertEqual(restored_docx.filename, "Replay_report_restored.docx")
 
     def test_wrong_password_and_hostile_key_are_rejected(self):
         content = _docx_bytes("Почта secret@example.ru")
