@@ -23,7 +23,9 @@ from openpyxl.utils import get_column_letter
 
 KEY_FORMAT = "atlas-anonymization-key"
 KEY_VERSION = 1
-SUPPORTED_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".eml"}
+OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx"}
+TEXT_EXTENSIONS = {".csv", ".txt", ".json", ".md"}
+SUPPORTED_EXTENSIONS = OFFICE_EXTENSIONS | TEXT_EXTENSIONS | {".eml"}
 LEGACY_EXTENSIONS = {".doc", ".xls", ".ppt", ".msg"}
 
 ENTITY_LABELS = {
@@ -330,11 +332,37 @@ def _extension(filename: str) -> str:
     if extension in LEGACY_EXTENSIONS:
         raise ValueError(
             f"Формат {extension} нельзя безопасно восстановить без потери структуры. "
-            "Сохраните файл как DOCX, XLSX, PPTX или EML."
+            "Сохраните файл как DOCX, XLSX, PPTX, EML, CSV, TXT, JSON или MD."
         )
     if extension not in SUPPORTED_EXTENSIONS:
-        raise ValueError("Поддерживаются DOCX, XLSX, PPTX и Outlook EML.")
+        raise ValueError("Поддерживаются DOCX, XLSX, PPTX, Outlook EML, CSV, TXT, JSON и MD.")
     return extension
+
+
+def _decode_text_document(content: bytes) -> tuple[str, str, bytes]:
+    if content.startswith(b"\xef\xbb\xbf"):
+        return content[3:].decode("utf-8"), "utf-8", b"\xef\xbb\xbf"
+    if content.startswith(b"\xff\xfe"):
+        return content[2:].decode("utf-16-le"), "utf-16-le", b"\xff\xfe"
+    if content.startswith(b"\xfe\xff"):
+        return content[2:].decode("utf-16-be"), "utf-16-be", b"\xfe\xff"
+    for encoding in ("utf-8", "cp1251"):
+        try:
+            text = content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if "\x00" not in text:
+            return text, encoding, b""
+    raise ValueError("Не удалось определить кодировку текстового файла. Используйте UTF-8 или Windows-1251.")
+
+
+def _encode_text_document(text: str, encoding: str, bom: bytes) -> bytes:
+    try:
+        return bom + text.encode(encoding)
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            "После обработки текст нельзя сохранить в исходной кодировке. Пересохраните файл в UTF-8."
+        ) from exc
 
 
 def _office_member_supported(extension: str, member: str) -> bool:
@@ -405,7 +433,12 @@ def _eml_texts(content: bytes) -> list[str]:
 
 def extract_texts(content: bytes, filename: str) -> list[str]:
     extension = _extension(filename)
-    return _eml_texts(content) if extension == ".eml" else _office_texts(content, extension)
+    if extension == ".eml":
+        return _eml_texts(content)
+    if extension in TEXT_EXTENSIONS:
+        text, _, _ = _decode_text_document(content)
+        return [text]
+    return _office_texts(content, extension)
 
 
 def find_sensitive_data(
@@ -578,7 +611,11 @@ def _replace_eml_message(message: Message, plan: _ReplacementPlan) -> int:
 def _transform_document(content: bytes, filename: str, replacements: dict[str, str]) -> tuple[bytes, int]:
     extension = _extension(filename)
     plan = _replacement_plan(replacements)
-    if extension != ".eml":
+    if extension in TEXT_EXTENSIONS:
+        text, encoding, bom = _decode_text_document(content)
+        updated, count = _replace_text(text, plan)
+        return _encode_text_document(updated, encoding, bom), count
+    if extension in OFFICE_EXTENSIONS:
         return _transform_office(content, extension, plan)
     message = BytesParser(policy=policy.default).parsebytes(content)
     count = _replace_eml_message(message, plan)

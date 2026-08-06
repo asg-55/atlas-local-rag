@@ -636,10 +636,10 @@ if active_section == "Обезличивание":
 
     with anonymize_tab:
         source_file = st.file_uploader(
-            "Документ Word, Excel, PowerPoint или письмо Outlook",
-            type=["docx", "xlsx", "pptx", "eml"],
+            "Документ Office, письмо Outlook или текстовый файл",
+            type=["docx", "xlsx", "pptx", "eml", "csv", "txt", "json", "md"],
             key="anonymize-source-file",
-            help="Старые DOC/XLS/PPT и Outlook MSG сначала сохраните в DOCX/XLSX/PPTX или EML.",
+            help="Поддерживаются DOCX, XLSX, PPTX, EML, CSV, TXT, JSON и Markdown. Старые DOC/XLS/PPT и Outlook MSG сначала преобразуйте в современный формат.",
         )
         category_labels = {label: category for category, label in ENTITY_LABELS.items()}
         selected_labels = st.multiselect(
@@ -829,7 +829,7 @@ if active_section == "Обезличивание":
         st.caption("Загрузите обработанный обезличенный файл и соответствующий ему ключ Atlas.")
         anonymous_file = st.file_uploader(
             "Обезличенный документ",
-            type=["docx", "xlsx", "pptx", "eml"],
+            type=["docx", "xlsx", "pptx", "eml", "csv", "txt", "json", "md"],
             key="restore-source-file",
         )
         key_file = st.file_uploader(

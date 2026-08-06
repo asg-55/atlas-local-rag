@@ -217,6 +217,52 @@ class AnonymizerTests(unittest.TestCase):
         self.assertEqual(str(restored_message["To"]), "receiver@example.ru")
         self.assertIn("receiver@example.ru", restored_message.get_content())
 
+    def test_text_formats_round_trip_preserves_encoding_and_structure(self):
+        cases = [
+            (
+                "signals.csv",
+                "Тег;Почта\r\nTIR_4_123;operator@example.ru\r\n".encode("cp1251"),
+                "cp1251",
+            ),
+            (
+                "notes.txt",
+                "Контур TR-3-4-9, ответственный operator@example.ru.\r\n".encode("utf-8"),
+                "utf-8",
+            ),
+            (
+                "payload.json",
+                b"\xef\xbb\xbf" + '{\n  "tag": "QIRA_101_5.PV",\n  "email": "operator@example.ru"\n}\n'.encode("utf-8"),
+                "utf-8-sig",
+            ),
+            (
+                "readme.md",
+                "# Сигнал\n\nПрибор **18 TIR 75D**, контакт operator@example.ru.\n".encode("utf-16"),
+                "utf-16",
+            ),
+        ]
+        for filename, content, encoding in cases:
+            with self.subTest(filename=filename):
+                findings = find_sensitive_data(
+                    content,
+                    filename,
+                    {"EMAIL", "TECHNICAL_TAG"},
+                )
+                self.assertTrue(any(finding.category == "TECHNICAL_TAG" for finding in findings))
+                self.assertTrue(any(finding.category == "EMAIL" for finding in findings))
+                result = anonymize_document(content, filename, findings, PASSWORD)
+                anonymous_text = result.content.decode(encoding)
+                self.assertIn("ATLAS-TECHNICAL_TAG-", anonymous_text)
+                self.assertIn("@anonymous.invalid", anonymous_text)
+                if filename.endswith(".json"):
+                    json.loads(anonymous_text)
+                restored = restore_document(
+                    result.content,
+                    result.filename,
+                    result.key_content,
+                    PASSWORD,
+                )
+                self.assertEqual(restored.content, content)
+
     def test_wrong_password_and_hostile_key_are_rejected(self):
         content = _docx_bytes("Почта secret@example.ru")
         result = anonymize_document(
