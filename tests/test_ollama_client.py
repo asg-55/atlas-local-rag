@@ -69,6 +69,37 @@ class OllamaClientTests(unittest.TestCase):
         self.assertFalse(result["needs_clarification"])
         self.assertEqual("давление в D2B", result["search_query"])
 
+    def test_work_code_mode_requests_complete_copyable_solution(self):
+        client = OllamaClient("http://ollama", "qwen3.5:9b")
+        client.generate = Mock(
+            side_effect=[
+                "```python\nprint('draft')\n```",
+                "```python\nprint('reviewed')\n```",
+            ]
+        )
+
+        answer = client.answer(
+            "Напиши скрипт для CSV",
+            [],
+            [],
+            strict=False,
+            answer_mode="Рабочий код",
+        )
+
+        self.assertIn("reviewed", answer)
+        self.assertEqual(2, client.generate.call_count)
+        prompt = client.generate.call_args_list[0].args[0]
+        review_prompt = client.generate.call_args_list[1].args[0]
+        self.assertIn("полный самодостаточный код", prompt)
+        self.assertIn("VBA, Python или C#", prompt)
+        self.assertIn("сначала читай в `Variant`", prompt)
+        self.assertIn("ошибки типов", prompt)
+        self.assertNotIn("После каждого существенного утверждения", prompt)
+        self.assertIn("последнюю строку бери из обрабатываемого столбца", review_prompt)
+        self.assertIn("затем `IsNumeric`, затем `CDbl`", review_prompt)
+        self.assertIn("Не используй внешний блок `markdown`", review_prompt)
+        self.assertFalse(client.generate.call_args_list[1].kwargs["think"])
+
     @patch("rag_assistant.ollama_client.requests.post")
     def test_retries_without_thinking_when_final_answer_is_empty(self, post):
         thinking_only = Mock()

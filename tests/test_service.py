@@ -35,6 +35,30 @@ class AssistantServiceTests(unittest.TestCase):
             "conversation", "Дай данные по катализатору"
         )
 
+    def test_work_code_mode_skips_document_interpreter_and_retrieval(self):
+        service = AssistantService.__new__(AssistantService)
+        service.db = Mock()
+        service.db.messages.side_effect = [[], [{"role": "user"}, {"role": "assistant"}]]
+        service.db.list_chat_attachments.return_value = []
+        service.ollama = Mock()
+        service.ollama.answer.return_value = "```vba\nSub Test()\nEnd Sub\n```"
+        service.retriever = Mock()
+        service.settings = Mock(max_context_chars=24000)
+
+        answer, sources, query = service.answer(
+            "conversation",
+            "Напиши макрос",
+            strict=False,
+            answer_mode="Рабочий код",
+            use_rag=False,
+        )
+
+        self.assertIn("Sub Test", answer)
+        self.assertEqual([], sources)
+        self.assertEqual("Напиши макрос", query)
+        service.ollama.interpret_question.assert_not_called()
+        service.retriever.search.assert_not_called()
+
     def test_attachment_is_persistent_but_not_added_to_rag(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = Settings(data_dir=Path(directory))

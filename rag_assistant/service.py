@@ -179,12 +179,20 @@ class AssistantService:
         previous_rows = self.db.messages(conversation_id, limit=8)
         history = [dict(row) for row in previous_rows]
         attachments = [dict(row) for row in self.db.list_chat_attachments(conversation_id)]
-        interpretation = self.ollama.interpret_question(
-            question,
-            history,
-            model=model,
-            document_selected=document_id is not None or bool(attachments),
-        )
+        if answer_mode == "Рабочий код":
+            interpretation = {
+                "intent": "Написание рабочего кода",
+                "search_query": question,
+                "needs_clarification": False,
+                "clarifying_question": "",
+            }
+        else:
+            interpretation = self.ollama.interpret_question(
+                question,
+                history,
+                model=model,
+                document_selected=document_id is not None or bool(attachments),
+            )
         standalone = interpretation["search_query"]
         self.db.add_message(conversation_id, "user", question)
         if interpretation["needs_clarification"]:
