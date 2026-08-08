@@ -154,6 +154,16 @@ st.markdown(
         width:100%;height:2.55rem;min-height:2.55rem;padding:0 .55rem;border-radius:.65rem;
         display:flex;align-items:center;justify-content:center;line-height:1;font-size:.88rem;white-space:nowrap;
     }
+    .sidebar-chat {margin:.85rem 0 .25rem;padding:.8rem .85rem;background:#202020;border:1px solid #303030;border-radius:.7rem;}
+    .sidebar-chat-label {display:block;color:#747474!important;font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin-bottom:.3rem;}
+    .sidebar-chat-title {display:block;color:#e4e4e4!important;font-size:.87rem;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .workspace-note {color:#858585;font-size:.78rem;margin:.35rem 0 1.1rem;padding-left:.1rem;}
+    .st-key-workspace-section [data-testid="stSegmentedControl"],
+    .st-key-tools-section [data-testid="stSegmentedControl"] {
+        background:#272727;border:1px solid #363636;border-radius:.75rem;padding:.25rem;
+    }
+    .st-key-workspace-section button, .st-key-tools-section button {border-radius:.55rem!important;}
+    .st-key-tools-section {max-width:32rem;margin:.1rem 0 .85rem;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -312,7 +322,7 @@ conversation_id = ensure_conversation()
 with st.sidebar:
     st.markdown(
         "<div class='brand'><span class='brand-mark'>◈</span><span class='brand-name'>Atlas</span>"
-        "<div class='brand-sub'>Рабочая база знаний</div></div>",
+        "<div class='brand-sub'>Локальный рабочий ассистент</div></div>",
         unsafe_allow_html=True,
     )
     stats = db.stats()
@@ -325,31 +335,35 @@ with st.sidebar:
         if history_col.button("История", use_container_width=True):
             show_conversation_history(conversation_id)
     current_conversation = db.get_conversation(conversation_id)
-    st.caption("ТЕКУЩИЙ ДИАЛОГ")
-    st.write(current_conversation["title"] if current_conversation else "Новый диалог")
+    current_title = current_conversation["title"] if current_conversation else "Новый диалог"
+    st.markdown(
+        "<div class='sidebar-chat'><span class='sidebar-chat-label'>Текущий диалог</span>"
+        f"<span class='sidebar-chat-title'>{html.escape(current_title)}</span></div>",
+        unsafe_allow_html=True,
+    )
     attachment_count = len(db.list_chat_attachments(conversation_id))
     if attachment_count:
         st.caption(f"Вложений без индексации: {attachment_count}")
     st.divider()
-    st.caption("РЕЖИМ ОТВЕТА")
-    knowledge_mode = st.radio(
-        "Источник ответа",
-        ["Только документы", "Документы + знания модели"],
-        index=0,
-        help="В первом режиме ответ строится только по загруженной базе; во втором модель может дополнять его общими знаниями.",
-    )
-    strict_mode = knowledge_mode == "Только документы"
-    quality_profile = st.selectbox(
-        "Профиль качества",
-        ["Быстро", "Баланс", "Глубокий анализ", "Вручную"],
-        index=1,
-    )
-    answer_mode = st.selectbox(
-        "Формат ответа",
-        ["Краткий ответ", "Подробный ответ", "Извлечь все данные", "Аналитический разбор"],
-        index=1,
-    )
-    with st.popover("⚙ Расширенные настройки", use_container_width=True):
+    with st.expander("Ответ и качество", expanded=False):
+        knowledge_mode = st.radio(
+            "Источник ответа",
+            ["Только документы", "Документы + знания модели"],
+            index=0,
+            help="В первом режиме ответ строится только по загруженной базе; во втором модель может дополнять его общими знаниями.",
+        )
+        strict_mode = knowledge_mode == "Только документы"
+        quality_profile = st.selectbox(
+            "Профиль качества",
+            ["Быстро", "Баланс", "Глубокий анализ", "Вручную"],
+            index=1,
+        )
+        answer_mode = st.selectbox(
+            "Формат ответа",
+            ["Краткий ответ", "Подробный ответ", "Извлечь все данные", "Аналитический разбор"],
+            index=1,
+        )
+    with st.popover("Технические параметры", use_container_width=True):
         model_options = available_models(service.ollama)
         if settings.chat_model not in model_options:
             model_options.insert(0, settings.chat_model)
@@ -459,12 +473,31 @@ st.markdown(
     unsafe_allow_html=True,
 )
 active_section = st.segmented_control(
-    "Раздел",
-    ["Чат", "Файлы", "Обезличивание", "Отчеты в Excel", "Диагностика"],
+    "Рабочий раздел",
+    ["Чат", "База знаний", "Обезличивание", "Инструменты"],
     default="Чат",
-    key="main-section",
+    key="workspace-section",
     label_visibility="collapsed",
 ) or "Чат"
+
+section_notes = {
+    "Чат": "Найдите информацию, сравните документы, проанализируйте данные или подготовьте рабочий ответ.",
+    "База знаний": "Управление локальными документами и поисковым индексом Atlas.",
+    "Обезличивание": "Обратимая защита данных перед передачей документов во внешнюю обработку.",
+    "Инструменты": "Специализированные операции, которые выполняются отдельно от чата.",
+}
+st.markdown(f"<div class='workspace-note'>{section_notes[active_section]}</div>", unsafe_allow_html=True)
+
+if active_section == "Инструменты":
+    active_section = st.segmented_control(
+        "Инструмент",
+        ["Отчеты в Excel", "Диагностика"],
+        default="Отчеты в Excel",
+        key="tools-section",
+        label_visibility="collapsed",
+    ) or "Отчеты в Excel"
+elif active_section == "База знаний":
+    active_section = "Файлы"
 
 if active_section == "Чат":
     notice = st.session_state.pop("chat-attachment-notice", None)
@@ -498,8 +531,8 @@ if active_section == "Чат":
     messages = db.messages(conversation_id)
     if not messages:
         st.markdown(
-            "<div class='empty-state'><div class='empty-logo'>◈</div><h2>Чем помочь?</h2>"
-            "<p>Спросите о документации, попросите собрать таблицу параметров, сравнить требования или извлечь все данные со скана.</p></div>",
+            "<div class='empty-state'><div class='empty-logo'>◈</div><h2>Найти. Сравнить. Проанализировать.</h2>"
+            "<p>Опишите задачу обычными словами: Atlas найдёт сведения в документах, сопоставит данные, выделит отклонения или подготовит структурированный ответ.</p></div>",
             unsafe_allow_html=True,
         )
     for message in messages:
