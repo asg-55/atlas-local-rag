@@ -75,6 +75,17 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertIn("Давление D2B составляет 5 МПа", selected)
         self.assertLessEqual(len(selected), 1200)
 
+    def test_long_structured_attachment_always_keeps_dataset_summary(self):
+        text = "\n\n".join(
+            ["[signals.csv, сводка]\nСводка набора данных: signals.csv\nСтрок данных: 10000"]
+            + [f"[строки {index}]\nПараметр={index} " + "x" * 500 for index in range(20)]
+        )
+
+        selected = AssistantService._select_attachment_text(text, "найди отклонения", 1200)
+
+        self.assertIn("Строк данных: 10000", selected)
+        self.assertLessEqual(len(selected), 1200)
+
 
 if __name__ == "__main__":
     unittest.main()

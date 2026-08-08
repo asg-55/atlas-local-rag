@@ -474,7 +474,7 @@ st.markdown(
 )
 active_section = st.segmented_control(
     "Рабочий раздел",
-    ["Чат", "База знаний", "Обезличивание", "Инструменты"],
+    ["Чат", "Анализ", "База знаний", "Обезличивание", "Инструменты"],
     default="Чат",
     key="workspace-section",
     label_visibility="collapsed",
@@ -482,6 +482,7 @@ active_section = st.segmented_control(
 
 section_notes = {
     "Чат": "Найдите информацию, сравните документы, проанализируйте данные или подготовьте рабочий ответ.",
+    "Анализ": "Прикрепите XLSX, CSV или JSON и поставьте задачу обычными словами — без добавления файла в RAG.",
     "База знаний": "Управление локальными документами и поисковым индексом Atlas.",
     "Обезличивание": "Обратимая защита данных перед передачей документов во внешнюю обработку.",
     "Инструменты": "Специализированные операции, которые выполняются отдельно от чата.",
@@ -499,7 +500,15 @@ if active_section == "Инструменты":
 elif active_section == "База знаний":
     active_section = "Файлы"
 
-if active_section == "Чат":
+if active_section in {"Чат", "Анализ"}:
+    analysis_workspace = active_section == "Анализ"
+    if analysis_workspace:
+        st.markdown(
+            "<div class='feature-note'><b>Анализ данных.</b> Atlas сам определяет структуру таблиц, "
+            "считает пропуски, диапазоны и типовые значения, а затем использует их в ответе. "
+            "Файл остаётся вложением текущего диалога и не попадает в базу знаний.</div>",
+            unsafe_allow_html=True,
+        )
     notice = st.session_state.pop("chat-attachment-notice", None)
     if notice:
         st.success(notice)
@@ -531,8 +540,11 @@ if active_section == "Чат":
     messages = db.messages(conversation_id)
     if not messages:
         st.markdown(
-            "<div class='empty-state'><div class='empty-logo'>◈</div><h2>Найти. Сравнить. Проанализировать.</h2>"
-            "<p>Опишите задачу обычными словами: Atlas найдёт сведения в документах, сопоставит данные, выделит отклонения или подготовит структурированный ответ.</p></div>",
+            ("<div class='empty-state'><div class='empty-logo'>◈</div><h2>Прикрепите данные и опишите задачу</h2>"
+             "<p>Например: сравните показатели по периодам, найдите пропуски и отклонения, сформулируйте основные выводы.</p></div>"
+             if analysis_workspace else
+             "<div class='empty-state'><div class='empty-logo'>◈</div><h2>Найти. Сравнить. Проанализировать.</h2>"
+             "<p>Опишите задачу обычными словами: Atlas найдёт сведения в документах, сопоставит данные, выделит отклонения или подготовит структурированный ответ.</p></div>"),
             unsafe_allow_html=True,
         )
     for message in messages:
@@ -542,9 +554,14 @@ if active_section == "Чат":
                 render_sources(service.decode_sources(message))
     st.caption("Можно писать обычными словами — Atlas уточнит задачу, если данных недостаточно.")
     submission = st.chat_input(
-        "Напишите вопрос или прикрепите файл без добавления в RAG…",
+        ("Прикрепите XLSX, CSV или JSON и опишите, что нужно выяснить…"
+         if analysis_workspace else "Напишите вопрос или прикрепите файл без добавления в RAG…"),
         accept_file="multiple",
-        file_type=["pdf", "doc", "docx", "xlsx", "txt", "md", "csv", "jpg", "jpeg", "png", "mp3", "wav", "m4a", "ogg", "flac"],
+        file_type=(
+            ["xlsx", "csv", "json"]
+            if analysis_workspace
+            else ["pdf", "doc", "docx", "xlsx", "txt", "md", "csv", "json", "jpg", "jpeg", "png", "mp3", "wav", "m4a", "ogg", "flac"]
+        ),
     )
     if submission:
         question = str(getattr(submission, "text", submission) or "").strip()
@@ -590,8 +607,12 @@ if active_section == "Чат":
                         top_p=top_p,
                         num_ctx=num_ctx,
                         final_k=final_k,
-                        answer_mode=answer_mode,
-                        custom_instruction=custom_instruction,
+                        answer_mode="Аналитический разбор" if analysis_workspace else answer_mode,
+                        custom_instruction=(
+                            (custom_instruction + "\n" if custom_instruction else "")
+                            + "Опирайся на вычисленную сводку по всему набору данных. Отделяй факты из сводки от наблюдений по отдельным строкам; не делай точных расчётов, которых нет в источнике."
+                            if analysis_workspace else custom_instruction
+                        ),
                         document_id=selected_document_id,
                         think=think,
                         use_rag=use_rag_for_chat if conversation_attachments else not bool(attached_names),
@@ -607,8 +628,8 @@ if active_section == "Чат":
 if active_section == "Файлы":
     st.markdown("<div class='section-title'>Добавить материалы</div><div class='section-copy'>Документы сохраняются локально и сразу становятся доступны в поиске.</div>", unsafe_allow_html=True)
     uploaded_files = st.file_uploader(
-        "PDF, DOC, DOCX, XLSX, изображения или аудио",
-        type=["pdf", "doc", "docx", "xlsx", "txt", "md", "csv", "jpg", "jpeg", "png", "mp3", "wav", "m4a", "ogg", "flac"],
+        "PDF, DOC, DOCX, XLSX, CSV, JSON, изображения или аудио",
+        type=["pdf", "doc", "docx", "xlsx", "txt", "md", "csv", "json", "jpg", "jpeg", "png", "mp3", "wav", "m4a", "ogg", "flac"],
         accept_multiple_files=True,
         help="Оригиналы сохраняются локально. Повторная загрузка того же файла определяется по SHA-256.",
     )

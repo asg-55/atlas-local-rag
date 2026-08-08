@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import shutil
 import subprocess
@@ -449,7 +450,8 @@ def parse_doc(path: Path) -> list[TextBlock]:
 
 
 def _clean_cell(value) -> str:
-    if pd.isna(value):
+    missing = pd.isna(value)
+    if isinstance(missing, (bool, np.bool_)) and missing:
         return ""
     if hasattr(value, "isoformat"):
         try:
@@ -459,32 +461,152 @@ def _clean_cell(value) -> str:
     return " ".join(str(value).split())
 
 
+def _unique_headers(values: list[object]) -> list[str]:
+    headers: list[str] = []
+    used: dict[str, int] = {}
+    for index, value in enumerate(values, start=1):
+        base = _clean_cell(value) or f"Столбец {index}"
+        used[base] = used.get(base, 0) + 1
+        headers.append(base if used[base] == 1 else f"{base} ({used[base]})")
+    return headers
+
+
+def _looks_like_header(values: list[object]) -> bool:
+    populated = [_clean_cell(value) for value in values if _clean_cell(value)]
+    if not populated:
+        return False
+    text_cells = sum(not re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", value) for value in populated)
+    return text_cells / len(populated) >= 0.7 and len(set(populated)) == len(populated)
+
+
+def _numeric_series(series: pd.Series) -> pd.Series:
+    normalized = series.map(
+        lambda value: _clean_cell(value).replace(" ", "").replace(",", ".") or None
+    )
+    return pd.to_numeric(normalized, errors="coerce")
+
+
+def _structured_frame_blocks(frame: pd.DataFrame, label: str) -> list[TextBlock]:
+    frame = frame.dropna(how="all").dropna(axis=1, how="all")
+    if frame.empty:
+        return []
+
+    first_row = frame.iloc[0].tolist()
+    has_header = _looks_like_header(first_row)
+    headers = _unique_headers(first_row if has_header else list(frame.columns))
+    data = frame.iloc[1:].copy() if has_header else frame.copy()
+    data.columns = headers
+    data = data.reset_index(drop=True)
+
+    summary_lines = [
+        f"Сводка набора данных: {label}",
+        f"Строк данных: {len(data)}; столбцов: {len(headers)}.",
+        "Столбцы: " + ", ".join(headers[:80]) + (" …" if len(headers) > 80 else ""),
+    ]
+    for header in headers[:80]:
+        series = data[header]
+        populated = series.dropna().map(_clean_cell)
+        populated = populated[populated != ""]
+        missing = len(data) - len(populated)
+        numeric = _numeric_series(series).dropna()
+        numeric_ratio = len(numeric) / max(1, len(populated))
+        if populated.empty:
+            detail = "нет заполненных значений"
+        elif numeric_ratio >= 0.8:
+            detail = (
+                f"числовой; заполнено {len(populated)}, пропущено {missing}; "
+                f"мин. {_clean_cell(numeric.min())}; макс. {_clean_cell(numeric.max())}; "
+                f"среднее {_clean_cell(round(float(numeric.mean()), 4))}"
+            )
+        else:
+            common = populated.value_counts().head(3)
+            rendered = ", ".join(f"{value} ({count})" for value, count in common.items())
+            detail = (
+                f"текстовый; заполнено {len(populated)}, пропущено {missing}; "
+                f"уникальных {populated.nunique()}; частые: {rendered}"
+            )
+        summary_lines.append(f"- {header}: {detail}.")
+    if len(headers) > 80:
+        summary_lines.append(f"- Ещё {len(headers) - 80} столбцов не включены в краткую сводку.")
+
+    blocks = [
+        TextBlock(
+            text="\n".join(summary_lines),
+            location=f"{label}, сводка",
+            block_type="data_summary",
+            metadata={"dataset": label, "rows": len(data), "columns": len(headers)},
+        )
+    ]
+    for start in range(0, len(data), 20):
+        group = data.iloc[start : start + 20]
+        rows: list[str] = []
+        for offset, (_, values) in enumerate(group.iterrows(), start=start + 1):
+            cells = [
+                f"{header}={_clean_cell(value)}"
+                for header, value in zip(headers, values.tolist())
+                if _clean_cell(value)
+            ]
+            if cells:
+                rows.append(f"Строка {offset}: " + " | ".join(cells))
+        if rows:
+            blocks.append(
+                TextBlock(
+                    text=f"Набор данных: {label}\n" + "\n".join(rows),
+                    location=f"{label}, строки {start + 1}–{start + len(group)}",
+                    block_type="table",
+                    metadata={"dataset": label, "row_start": start + 1, "row_end": start + len(group)},
+                )
+            )
+    return blocks
+
+
 def parse_xlsx(path: Path) -> list[TextBlock]:
     blocks: list[TextBlock] = []
     book = pd.ExcelFile(path, engine="openpyxl")
     for sheet_name in book.sheet_names:
         frame = pd.read_excel(path, sheet_name=sheet_name, header=None, dtype=object, engine="openpyxl")
-        frame = frame.dropna(how="all").dropna(axis=1, how="all")
-        rows: list[tuple[int, str]] = []
-        for index, values in frame.iterrows():
-            cells = [_clean_cell(value) for value in values.tolist()]
-            rendered = " | ".join(value for value in cells if value)
-            if rendered:
-                rows.append((int(index) + 1, rendered))
-        for start in range(0, len(rows), 20):
-            group = rows[start : start + 20]
-            if not group:
-                continue
-            text = f"Лист: {sheet_name}\n" + "\n".join(f"Строка {n}: {value}" for n, value in group)
-            blocks.append(
-                TextBlock(
-                    text=text,
-                    location=f"лист «{sheet_name}», строки {group[0][0]}–{group[-1][0]}",
-                    block_type="table",
-                    metadata={"sheet": sheet_name, "row_start": group[0][0], "row_end": group[-1][0]},
-                )
-            )
+        blocks.extend(_structured_frame_blocks(frame, f"лист «{sheet_name}»"))
     return blocks
+
+
+def parse_csv(path: Path) -> list[TextBlock]:
+    content = path.read_bytes()
+    decoded = None
+    for encoding in ("utf-8-sig", "utf-8", "cp1251"):
+        try:
+            decoded = content.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    decoded = decoded if decoded is not None else content.decode("utf-8", errors="replace")
+    try:
+        frame = pd.read_csv(io.StringIO(decoded), sep=None, engine="python", header=None, dtype=object)
+    except (pd.errors.ParserError, ValueError):
+        frame = pd.read_csv(io.StringIO(decoded), header=None, dtype=object)
+    return _structured_frame_blocks(frame, path.name)
+
+
+def parse_json(path: Path) -> list[TextBlock]:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    records = payload
+    label = path.name
+    if isinstance(payload, dict):
+        candidates = [
+            (key, value)
+            for key, value in payload.items()
+            if isinstance(value, list) and value and all(isinstance(item, dict) for item in value)
+        ]
+        if candidates:
+            key, records = max(candidates, key=lambda item: len(item[1]))
+            label = f"{path.name} · {key}"
+    if isinstance(records, list) and records and all(isinstance(item, dict) for item in records):
+        frame = pd.json_normalize(records)
+        frame_with_header = pd.concat(
+            [pd.DataFrame([frame.columns.tolist()], columns=frame.columns), frame], ignore_index=True
+        )
+        return _structured_frame_blocks(frame_with_header, label)
+    pretty = json.dumps(payload, ensure_ascii=False, indent=2)
+    return [TextBlock(text=pretty, location="JSON", block_type="text")] if pretty else []
 
 
 def parse_image(path: Path) -> list[TextBlock]:
@@ -525,6 +647,10 @@ def parse_file(path: Path) -> list[TextBlock]:
         return parse_image(path)
     if extension in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}:
         return parse_audio(path)
-    if extension in {".txt", ".md", ".csv"}:
+    if extension == ".csv":
+        return parse_csv(path)
+    if extension == ".json":
+        return parse_json(path)
+    if extension in {".txt", ".md"}:
         return parse_text(path)
     raise ValueError(f"Формат {extension or '<без расширения>'} не поддерживается")

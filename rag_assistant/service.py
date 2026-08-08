@@ -22,6 +22,11 @@ class AssistantService:
         if len(text) <= max_chars:
             return text
         sections = [section.strip() for section in text.split("\n\n") if section.strip()]
+        overview = [
+            (index, section)
+            for index, section in enumerate(sections)
+            if "Сводка набора данных:" in section
+        ]
         terms = {
             token.casefold()
             for token in re.findall(r"[\wА-Яа-яЁё-]+", query)
@@ -37,7 +42,15 @@ class AssistantService:
         )
         selected: list[tuple[int, str]] = []
         used = 0
+        for index, section in overview:
+            remaining = max_chars - used
+            if remaining <= 0:
+                break
+            selected.append((index, section[:remaining]))
+            used += min(len(section), remaining)
         for index, section in ranked:
+            if any(selected_index == index for selected_index, _ in selected):
+                continue
             if selected and used + len(section) > max_chars:
                 continue
             selected.append((index, section[:max_chars]))
