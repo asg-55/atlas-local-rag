@@ -371,7 +371,11 @@ with st.sidebar:
             "Модель ответа",
             options=model_options,
             index=model_options.index(settings.chat_model),
-            help="Список моделей, установленных в Ollama.",
+            help=(
+                "Модель, загруженная во встроенный llama-server."
+                if settings.llm_backend == "llama_cpp"
+                else "Список моделей, установленных в Ollama."
+            ),
         )
         preferred_coder_models = [
             "qwen2.5-coder:7b",

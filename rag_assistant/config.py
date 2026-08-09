@@ -13,7 +13,9 @@ def _env_bool(name: str, default: bool) -> bool:
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path = Path(os.getenv("DATA_DIR", "data"))
+    llm_backend: str = os.getenv("LLM_BACKEND", "ollama").lower()
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    llama_base_url: str = os.getenv("LLAMA_BASE_URL", "http://localhost:8080")
     chat_model: str = os.getenv("CHAT_MODEL", "qwen3.5:9b")
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
     reranker_model: str = os.getenv(

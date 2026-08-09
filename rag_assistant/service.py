@@ -10,6 +10,7 @@ from .chunking import make_chunks
 from .config import Settings
 from .database import Database
 from .embeddings import embed_passages
+from .llama_cpp_client import LlamaCppClient
 from .ollama_client import OllamaClient
 from .parsers import parse_file
 from .retrieval import HybridRetriever
@@ -66,7 +67,12 @@ class AssistantService:
         self.db = Database(settings.db_path)
         self.index = VectorIndex(self.db, settings.index_path, settings.index_meta_path, settings.embedding_model)
         self.retriever = HybridRetriever(self.db, self.index, settings)
-        self.ollama = OllamaClient(settings.ollama_base_url, settings.chat_model)
+        if settings.llm_backend == "llama_cpp":
+            self.ollama = LlamaCppClient(settings.llama_base_url, settings.chat_model)
+        elif settings.llm_backend == "ollama":
+            self.ollama = OllamaClient(settings.ollama_base_url, settings.chat_model)
+        else:
+            raise ValueError(f"Неизвестный LLM_BACKEND: {settings.llm_backend}")
 
     def ingest(self, filename: str, content: bytes) -> dict:
         digest = hashlib.sha256(content).hexdigest()
