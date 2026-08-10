@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import difflib
 import json
 import re
 
 import requests
+
+
+class ModelRequestError(RuntimeError):
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class OllamaClient:
@@ -66,6 +73,28 @@ class OllamaClient:
         except requests.RequestException as exc:
             return False, str(exc)
 
+    @staticmethod
+    def _raise_for_status(response) -> None:
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            detail = ""
+            try:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    detail = str(payload.get("error") or "").strip()
+            except (TypeError, ValueError):
+                pass
+            if not detail:
+                detail = str(getattr(response, "text", "") or "").strip()
+            detail = " ".join(detail.split())[:1500]
+            status_code = getattr(response, "status_code", None)
+            status = f"HTTP {status_code}" if status_code else "HTTP error"
+            message = f"Ollama отклонила запрос ({status})"
+            if detail:
+                message += f": {detail}"
+            raise ModelRequestError(message, status_code) from exc
+
     def generate(
         self,
         prompt: str,
@@ -93,7 +122,7 @@ class OllamaClient:
         if json_output:
             payload["format"] = "json"
         response = requests.post(f"{self.base_url}/api/generate", json=payload, timeout=self.timeout)
-        response.raise_for_status()
+        self._raise_for_status(response)
         data = response.json()
         answer = data.get("response", "").strip()
         # Thinking-capable models can spend the whole token budget on reasoning
@@ -102,7 +131,7 @@ class OllamaClient:
         if not answer and think and data.get("thinking"):
             retry_payload = {**payload, "think": False}
             response = requests.post(f"{self.base_url}/api/generate", json=retry_payload, timeout=self.timeout)
-            response.raise_for_status()
+            self._raise_for_status(response)
             answer = response.json().get("response", "").strip()
         if not answer:
             raise RuntimeError("Модель не сформировала финальный ответ. Увеличьте лимит токенов или отключите рассуждение.")
@@ -270,6 +299,44 @@ JSON:"""
                 if improvement_advice
                 else ""
             )
+            change_comparison = bool(
+                re.search(
+                    r"\b(?:что изменил(?:ось|и)|что поменял(?:ось|и)|какие изменения)\b",
+                    question.casefold(),
+                )
+            )
+            comparison_rule = (
+                "\n7. Пользователь спрашивает об изменениях. Сопоставь два последних показанных "
+                "варианта кода по вычисленному diff ниже и перечисли только фактические отличия. "
+                "Строки без знака + или - не являются изменениями. Не называй новым то, что уже "
+                "было в предыдущем варианте. Отдельно укажи ранее предложенные, но не реализованные "
+                "улучшения."
+                if change_comparison
+                else ""
+            )
+            code_versions = []
+            for item in history:
+                if item.get("role") != "assistant":
+                    continue
+                blocks = re.findall(
+                    r"```(?:[\w#+.-]+)?\s*\n(.*?)```",
+                    item.get("content", ""),
+                    flags=re.DOTALL,
+                )
+                if blocks:
+                    code_versions.append(blocks[-1].strip())
+            comparison_diff = ""
+            if change_comparison and len(code_versions) >= 2:
+                comparison_diff = "\n".join(
+                    difflib.unified_diff(
+                        code_versions[-2].splitlines(),
+                        code_versions[-1].splitlines(),
+                        fromfile="предыдущий вариант",
+                        tofile="последний вариант",
+                        lineterm="",
+                        n=1,
+                    )
+                )[:16000]
             prompt = f"""Ты — практичный помощник по программированию. Продолжи текущий разговор о ранее показанном коде и ответь на русском языке.
 
 Правила:
@@ -279,12 +346,16 @@ JSON:"""
 4. Учитывай весь доступный предыдущий код и не предлагай функции, которых в нём нет.
 5. Не утверждай, что код был запущен или проверен на компьютере пользователя.
 {improvement_rule}
+{comparison_rule}
 
 Недавний диалог и код:
 {code_history_text or 'нет'}
 
 Дополнительные материалы:
 {context or 'нет'}
+
+Вычисленные фактические отличия двух последних вариантов:
+{comparison_diff or 'не вычислялись'}
 
 Последний вопрос: {question}
 Ответ:"""

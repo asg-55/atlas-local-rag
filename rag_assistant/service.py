@@ -11,7 +11,7 @@ from .config import Settings
 from .database import Database
 from .embeddings import embed_passages
 from .llama_cpp_client import LlamaCppClient
-from .ollama_client import OllamaClient
+from .ollama_client import ModelRequestError, OllamaClient
 from .parsers import parse_file
 from .retrieval import HybridRetriever
 from .vector_index import VectorIndex
@@ -116,6 +116,7 @@ class AssistantService:
                 r"\b(?:почему|зачем|объясни|поясни|что значит|что делает|"
                 r"какая ошибка|в ч[её]м ошибка|как работает|чем отличается|"
                 r"на каком языке|как использовать|как запустить|куда вставить|где вставить|"
+                r"что изменил(?:ось|и)|что поменял(?:ось|и)|какие изменения|"
                 r"как (?:можно )?(?:усилить|улучшить|доработать)|что (?:можно )?(?:усилить|улучшить|доработать)|"
                 r"какие улучшения|эта строка|этот блок|этот код|why|explain|what does|how does)\b",
                 question.casefold(),
@@ -466,21 +467,40 @@ class AssistantService:
                 if response_kind in {"code_create", "code_discuss"}
                 else model
             )
-            answer = self.ollama.answer(
-                question,
-                results,
-                history,
-                strict=effective_strict,
-                model=effective_model,
-                temperature=temperature,
-                num_predict=num_predict,
-                top_p=top_p,
-                num_ctx=num_ctx,
-                answer_mode=effective_mode,
-                custom_instruction=custom_instruction,
-                think=think,
-                attachments=bounded_attachments,
+            effective_num_ctx, effective_num_predict = self._safe_model_limits(
+                effective_model, num_ctx, num_predict
             )
+            answer_options = {
+                "strict": effective_strict,
+                "model": effective_model,
+                "temperature": temperature,
+                "num_predict": effective_num_predict,
+                "top_p": top_p,
+                "num_ctx": effective_num_ctx,
+                "answer_mode": effective_mode,
+                "custom_instruction": custom_instruction,
+                "think": think,
+                "attachments": bounded_attachments,
+            }
+            try:
+                answer = self.ollama.answer(question, results, history, **answer_options)
+            except ModelRequestError:
+                fallback_model = model or getattr(self.ollama, "model", None)
+                if (
+                    response_kind not in {"code_create", "code_discuss"}
+                    or not fallback_model
+                    or fallback_model == effective_model
+                ):
+                    raise
+                fallback_ctx, fallback_predict = self._safe_model_limits(
+                    fallback_model, num_ctx, num_predict
+                )
+                answer_options.update(
+                    model=fallback_model,
+                    num_ctx=fallback_ctx,
+                    num_predict=fallback_predict,
+                )
+                answer = self.ollama.answer(question, results, history, **answer_options)
             sources = [
                 {
                     "filename": attachment["filename"],
@@ -491,6 +511,18 @@ class AssistantService:
                 for attachment in bounded_attachments
             ] + [result.as_source() for result in results]
         return answer, sources, standalone
+
+    def _safe_model_limits(
+        self, model: str | None, num_ctx: int, num_predict: int
+    ) -> tuple[int, int]:
+        try:
+            model_context = int(self.ollama.context_length(model))
+        except (AttributeError, TypeError, ValueError):
+            model_context = num_ctx
+        safe_context = max(1024, min(num_ctx, model_context))
+        response_reserve = min(4096, max(512, safe_context // 4))
+        safe_predict = max(256, min(num_predict, safe_context - response_reserve))
+        return safe_context, safe_predict
 
     @staticmethod
     def decode_sources(row) -> list[dict]:

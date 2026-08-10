@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
-from rag_assistant.ollama_client import OllamaClient
+from rag_assistant.ollama_client import ModelRequestError, OllamaClient
 
 
 class OllamaClientTests(unittest.TestCase):
@@ -141,6 +141,32 @@ class OllamaClientTests(unittest.TestCase):
         self.assertIn("предложи выбрать вариант", prompt)
         self.assertIn("не показывай полный или изменённый код", prompt)
 
+    def test_code_change_question_requires_actual_diff(self):
+        client = OllamaClient("http://ollama", "qwen3.5:9b")
+        client.generate = Mock(return_value="Добавлена только переменная filePattern.")
+
+        client.answer(
+            "Что изменилось в коде?",
+            [],
+            [
+                {"role": "assistant", "content": "```vba\nSub MoveFiles()\nEnd Sub\n```"},
+                {
+                    "role": "assistant",
+                    "content": "```vba\nSub MoveFiles()\nDim filePattern As String\nEnd Sub\n```",
+                },
+            ],
+            strict=False,
+            answer_mode="Обсуждение кода",
+        )
+
+        prompt = client.generate.call_args.args[0]
+        self.assertIn("сопоставь два последних", prompt.casefold())
+        self.assertIn("не называй новым", prompt.casefold())
+        self.assertIn("не реализованные улучшения", prompt.casefold())
+        self.assertIn("+Dim filePattern As String", prompt)
+        self.assertIn("--- предыдущий вариант", prompt)
+        self.assertIn("+++ последний вариант", prompt)
+
     def test_general_conversation_does_not_invent_document_sources(self):
         client = OllamaClient("http://ollama", "qwen3.5:9b")
         client.generate = Mock(return_value="Короткое объяснение")
@@ -182,6 +208,21 @@ class OllamaClientTests(unittest.TestCase):
         client = OllamaClient("http://ollama", "qwen3.5:9b")
         with self.assertRaisesRegex(RuntimeError, "не сформировала"):
             client.generate("prompt", think=False)
+
+    @patch("rag_assistant.ollama_client.requests.post")
+    def test_http_error_keeps_ollama_detail(self, post):
+        response = Mock(status_code=400, text='{"error":"context exceeds 32768"}')
+        response.json.return_value = {"error": "context exceeds 32768"}
+        response.raise_for_status.side_effect = requests.HTTPError(response=response)
+        post.return_value = response
+
+        client = OllamaClient("http://ollama", "qwen2.5-coder:7b")
+        with self.assertRaisesRegex(
+            ModelRequestError, "HTTP 400.*context exceeds 32768"
+        ) as raised:
+            client.generate("prompt")
+
+        self.assertEqual(400, raised.exception.status_code)
 
 
 if __name__ == "__main__":

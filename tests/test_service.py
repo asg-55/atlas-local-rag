@@ -5,6 +5,7 @@ from unittest.mock import Mock, call
 
 from rag_assistant.config import Settings
 from rag_assistant.database import Database
+from rag_assistant.ollama_client import ModelRequestError
 from rag_assistant.service import AssistantService
 
 
@@ -131,6 +132,48 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertEqual(
             "Обсуждение кода", service.ollama.answer.call_args.kwargs["answer_mode"]
         )
+
+    def test_code_model_limits_are_clamped_and_failure_falls_back(self):
+        history = [
+            {"role": "assistant", "content": "```vba\nSub Test()\nEnd Sub\n```"},
+        ]
+        service = self._routed_service(history)
+        service.ollama.interpret_question.return_value = {
+            "intent": "Объяснение изменений",
+            "search_query": "Что изменилось в коде?",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "response_kind": "conversation",
+            "use_knowledge": False,
+        }
+        service.ollama.context_length.side_effect = lambda model: {
+            "coder": 32768,
+            "general": 65536,
+        }[model]
+        service.ollama.answer.side_effect = [
+            ModelRequestError("Ollama отклонила запрос (HTTP 400)", 400),
+            "Изменения объяснены общей моделью.",
+        ]
+
+        answer, _, _ = service.answer(
+            "conversation",
+            "Что изменилось в коде?",
+            strict=False,
+            model="general",
+            code_model="coder",
+            num_ctx=65536,
+            num_predict=32768,
+            use_rag=None,
+        )
+
+        self.assertEqual("Изменения объяснены общей моделью.", answer)
+        first_call, fallback_call = service.ollama.answer.call_args_list
+        self.assertEqual("coder", first_call.kwargs["model"])
+        self.assertEqual(32768, first_call.kwargs["num_ctx"])
+        self.assertEqual(28672, first_call.kwargs["num_predict"])
+        self.assertEqual("general", fallback_call.kwargs["model"])
+        self.assertEqual(65536, fallback_call.kwargs["num_ctx"])
+        self.assertEqual(32768, fallback_call.kwargs["num_predict"])
 
     def test_generation_failure_marks_saved_question_for_retry(self):
         service = AssistantService.__new__(AssistantService)
