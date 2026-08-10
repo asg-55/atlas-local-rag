@@ -38,6 +38,8 @@ class OllamaClientTests(unittest.TestCase):
                     "search_query": "параметры катализатора",
                     "needs_clarification": True,
                     "clarifying_question": "По какой партии нужны данные?",
+                    "response_kind": "knowledge",
+                    "use_knowledge": True,
                 },
                 ensure_ascii=False,
             )
@@ -48,6 +50,8 @@ class OllamaClientTests(unittest.TestCase):
         self.assertTrue(result["needs_clarification"])
         self.assertEqual("параметры катализатора", result["search_query"])
         self.assertEqual("По какой партии нужны данные?", result["clarifying_question"])
+        self.assertEqual("knowledge", result["response_kind"])
+        self.assertTrue(result["use_knowledge"])
         self.assertTrue(client.generate.call_args.kwargs["json_output"])
 
     def test_interpreter_does_not_treat_string_false_as_true(self):
@@ -99,6 +103,44 @@ class OllamaClientTests(unittest.TestCase):
         self.assertIn("затем `IsNumeric`, затем `CDbl`", review_prompt)
         self.assertIn("Не используй внешний блок `markdown`", review_prompt)
         self.assertFalse(client.generate.call_args_list[1].kwargs["think"])
+
+    def test_code_follow_up_answers_once_without_full_regeneration(self):
+        client = OllamaClient("http://ollama", "qwen3.5:9b")
+        client.generate = Mock(return_value="Переменная хранит номер текущей строки.")
+        history = [
+            {"role": "assistant", "content": "```python\nfor row in rows:\n    print(row)\n```"}
+        ]
+
+        answer = client.answer(
+            "Что делает переменная row?",
+            [],
+            history,
+            strict=False,
+            answer_mode="Обсуждение кода",
+        )
+
+        self.assertIn("номер", answer)
+        self.assertEqual(1, client.generate.call_count)
+        prompt = client.generate.call_args.args[0]
+        self.assertIn("for row in rows", prompt)
+        self.assertIn("Не генерируй заново полный код", prompt)
+
+    def test_general_conversation_does_not_invent_document_sources(self):
+        client = OllamaClient("http://ollama", "qwen3.5:9b")
+        client.generate = Mock(return_value="Короткое объяснение")
+
+        client.answer(
+            "Объясни простыми словами",
+            [],
+            [],
+            strict=False,
+            answer_mode="Краткий ответ",
+        )
+
+        prompt = client.generate.call_args.args[0]
+        self.assertIn("локальный рабочий ассистент Atlas", prompt)
+        self.assertIn("без выдуманных ссылок на документы", prompt)
+        self.assertNotIn("После каждого существенного утверждения", prompt)
 
     @patch("rag_assistant.ollama_client.requests.post")
     def test_retries_without_thinking_when_final_answer_is_empty(self, post):

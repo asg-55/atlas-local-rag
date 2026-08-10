@@ -347,12 +347,17 @@ with st.sidebar:
     st.divider()
     with st.expander("Ответ и качество", expanded=False):
         knowledge_mode = st.radio(
-            "Источник ответа",
-            ["Только документы", "Документы + знания модели"],
+            "Работа с базой знаний",
+            ["Автоматически", "Только документы", "Без базы знаний"],
             index=0,
-            help="В первом режиме ответ строится только по загруженной базе; во втором модель может дополнять его общими знаниями.",
+            help="В автоматическом режиме Atlas сам решает, нужен ли поиск. Остальные режимы принудительно включают или отключают постоянную базу.",
         )
         strict_mode = knowledge_mode == "Только документы"
+        rag_policy = {
+            "Автоматически": None,
+            "Только документы": True,
+            "Без базы знаний": False,
+        }[knowledge_mode]
         quality_profile = st.selectbox(
             "Профиль качества",
             ["Быстро", "Баланс", "Глубокий анализ", "Вручную"],
@@ -482,27 +487,27 @@ with st.sidebar:
 stored_section = st.session_state.get("workspace-section", "Чат")
 if isinstance(stored_section, list):
     stored_section = stored_section[0] if stored_section else "Чат"
-header_model = code_model if stored_section == "Код" else selected_model
+if stored_section in {"Анализ", "Код"}:
+    st.session_state["workspace-section"] = "Чат"
+    stored_section = "Чат"
 st.markdown(
     f"""<section class="chat-head">
     <div class="assistant-orb">◈</div>
     <div><h1>Atlas</h1><p>{html.escape(current_conversation['title'] if current_conversation else 'Новый диалог')}</p></div>
-    <span class="model-chip">{html.escape(header_model)}</span>
+    <span class="model-chip">{html.escape(selected_model)}</span>
     </section>""",
     unsafe_allow_html=True,
 )
 active_section = st.segmented_control(
     "Рабочий раздел",
-    ["Чат", "Анализ", "Код", "База знаний", "Обезличивание", "Инструменты"],
+    ["Чат", "База знаний", "Обезличивание", "Инструменты"],
     default="Чат",
     key="workspace-section",
     label_visibility="collapsed",
 ) or "Чат"
 
 section_notes = {
-    "Чат": "Найдите информацию, сравните документы, проанализируйте данные или подготовьте рабочий ответ.",
-    "Анализ": "Прикрепите XLSX, CSV или JSON и поставьте задачу обычными словами — без добавления файла в RAG.",
-    "Код": "Небольшие рабочие решения на VBA, Python и C# — готовым блоком для копирования.",
+    "Чат": "Один диалог для вопросов, документов, анализа данных и рабочего кода — Atlas сам выбирает способ ответа.",
     "База знаний": "Управление локальными документами и поисковым индексом Atlas.",
     "Обезличивание": "Обратимая защита данных перед передачей документов во внешнюю обработку.",
     "Инструменты": "Специализированные операции, которые выполняются отдельно от чата.",
@@ -520,28 +525,17 @@ if active_section == "Инструменты":
 elif active_section == "База знаний":
     active_section = "Файлы"
 
-if active_section in {"Чат", "Анализ", "Код"}:
-    analysis_workspace = active_section == "Анализ"
-    code_workspace = active_section == "Код"
-    if analysis_workspace:
-        st.markdown(
-            "<div class='feature-note'><b>Анализ данных.</b> Atlas сам определяет структуру таблиц, "
-            "считает пропуски, диапазоны и типовые значения, а затем использует их в ответе. "
-            "Файл остаётся вложением текущего диалога и не попадает в базу знаний.</div>",
-            unsafe_allow_html=True,
-        )
-    elif code_workspace:
-        st.markdown(
-            "<div class='feature-note'><b>Рабочий код.</b> Опишите задачу обычными словами. "
-            "Atlas подготовит компактное решение для VBA, Python или C# и объяснит, куда вставить код и как его запустить. "
-            f"Код не выполняется автоматически. Модель: <code>{html.escape(code_model)}</code>.</div>",
-            unsafe_allow_html=True,
-        )
+if active_section == "Чат":
+    st.markdown(
+        "<div class='feature-note'><b>Единый рабочий диалог.</b> Можно прикрепить документ или таблицу, "
+        "попросить найти сведения в базе, написать код, а затем обсуждать и уточнять результат. "
+        "Код не выполняется автоматически; для его создания и проверки Atlas при наличии использует coder-модель.</div>",
+        unsafe_allow_html=True,
+    )
     notice = st.session_state.pop("chat-attachment-notice", None)
     if notice:
         st.success(notice)
     conversation_attachments = db.list_chat_attachments(conversation_id)
-    use_rag_for_chat = True
     if conversation_attachments:
         with st.expander(
             f"Вложения диалога · {len(conversation_attachments)} · без индексации в RAG",
@@ -559,24 +553,11 @@ if active_section in {"Чат", "Анализ", "Код"}:
                     service.delete_chat_attachment(conversation_id, attachment["id"])
                     st.session_state["chat-attachment-notice"] = "Вложение удалено из диалога."
                     st.rerun()
-            if not code_workspace:
-                use_rag_for_chat = st.checkbox(
-                    "Также искать в постоянной базе знаний",
-                    value=False,
-                    key=f"use-rag-with-attachments-{conversation_id}",
-                    help="Выключено по умолчанию: ответ строится только по вложениям этого диалога.",
-                )
     messages = db.messages(conversation_id)
     if not messages:
         st.markdown(
-            ("<div class='empty-state'><div class='empty-logo'>◈</div><h2>Опишите, что нужно автоматизировать</h2>"
-             "<p>Например: макрос для обработки листов Excel, Python-скрипт для CSV или небольшая утилита на C#.</p></div>"
-             if code_workspace else
-             "<div class='empty-state'><div class='empty-logo'>◈</div><h2>Прикрепите данные и опишите задачу</h2>"
-             "<p>Например: сравните показатели по периодам, найдите пропуски и отклонения, сформулируйте основные выводы.</p></div>"
-             if analysis_workspace else
-             "<div class='empty-state'><div class='empty-logo'>◈</div><h2>Найти. Сравнить. Проанализировать.</h2>"
-             "<p>Опишите задачу обычными словами: Atlas найдёт сведения в документах, сопоставит данные, выделит отклонения или подготовит структурированный ответ.</p></div>"),
+            "<div class='empty-state'><div class='empty-logo'>◈</div><h2>Спросить. Найти. Проанализировать. Создать.</h2>"
+            "<p>Пишите обычными словами или прикрепите файл. Atlas выберет подходящий способ ответа и сохранит контекст для следующих вопросов.</p></div>",
             unsafe_allow_html=True,
         )
     for message in messages:
@@ -584,23 +565,12 @@ if active_section in {"Чат", "Анализ", "Код"}:
             st.markdown(message["content"])
             if message["role"] == "assistant":
                 render_sources(service.decode_sources(message))
-    st.caption(
-        "Код будет показан в сообщении готовым блоком для копирования."
-        if code_workspace else "Можно писать обычными словами — Atlas уточнит задачу, если данных недостаточно."
+    st.caption("Можно продолжать обсуждение результата: Atlas учитывает предыдущие ответы, код и вложения диалога.")
+    submission = st.chat_input(
+        "Напишите сообщение или прикрепите файл без добавления в RAG…",
+        accept_file="multiple",
+        file_type=["pdf", "doc", "docx", "xlsx", "txt", "md", "csv", "json", "jpg", "jpeg", "png", "mp3", "wav", "m4a", "ogg", "flac"],
     )
-    if code_workspace:
-        submission = st.chat_input("Опишите задачу для VBA, Python или C#…")
-    else:
-        submission = st.chat_input(
-            ("Прикрепите XLSX, CSV или JSON и опишите, что нужно выяснить…"
-             if analysis_workspace else "Напишите вопрос или прикрепите файл без добавления в RAG…"),
-            accept_file="multiple",
-            file_type=(
-                ["xlsx", "csv", "json"]
-                if analysis_workspace
-                else ["pdf", "doc", "docx", "xlsx", "txt", "md", "csv", "json", "jpg", "jpeg", "png", "mp3", "wav", "m4a", "ogg", "flac"]
-            ),
-        )
     if submission:
         question = str(getattr(submission, "text", submission) or "").strip()
         direct_files = list(getattr(submission, "files", []) or [])
@@ -634,41 +604,27 @@ if active_section in {"Чат", "Анализ", "Код"}:
                 st.caption(f"Вложения: {', '.join(attached_names)}")
         with st.chat_message("assistant"):
             try:
-                with st.spinner(
-                    "Готовлю рабочее решение…"
-                    if code_workspace else "Понимаю задачу и ищу подтверждения в документах…"
-                ):
+                with st.spinner("Определяю задачу и готовлю ответ…"):
                     answer, sources, standalone = service.answer(
                         conversation_id,
                         question,
-                        strict=False if code_workspace else strict_mode,
-                        model=code_model if code_workspace else selected_model,
+                        strict=strict_mode,
+                        model=selected_model,
+                        code_model=code_model,
                         temperature=temperature,
                         num_predict=num_predict,
                         top_p=top_p,
                         num_ctx=num_ctx,
                         final_k=final_k,
-                        answer_mode=(
-                            "Рабочий код" if code_workspace
-                            else "Аналитический разбор" if analysis_workspace
-                            else answer_mode
-                        ),
-                        custom_instruction=(
-                            (custom_instruction + "\n" if custom_instruction else "")
-                            + "Опирайся на вычисленную сводку по всему набору данных. Отделяй факты из сводки от наблюдений по отдельным строкам; не делай точных расчётов, которых нет в источнике."
-                            if analysis_workspace else custom_instruction
-                        ),
-                        document_id=None if code_workspace else selected_document_id,
+                        answer_mode=answer_mode,
+                        custom_instruction=custom_instruction,
+                        document_id=selected_document_id,
                         think=think,
-                        use_rag=(
-                            False if code_workspace
-                            else use_rag_for_chat if conversation_attachments
-                            else not bool(attached_names)
-                        ),
+                        use_rag=rag_policy,
                     )
                 st.markdown(answer)
                 render_sources(sources)
-                if not code_workspace and standalone.casefold().strip() != question.casefold().strip():
+                if sources and standalone.casefold().strip() != question.casefold().strip():
                     st.caption(f"Поисковый запрос с учётом контекста: {standalone}")
             except Exception as exc:
                 st.error(f"Не удалось сформировать ответ: {exc}")

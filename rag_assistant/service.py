@@ -18,6 +18,8 @@ from .vector_index import VectorIndex
 
 
 class AssistantService:
+    RESPONSE_KINDS = {"conversation", "knowledge", "analysis", "code_create", "code_discuss"}
+
     @staticmethod
     def _select_attachment_text(text: str, query: str, max_chars: int) -> str:
         if len(text) <= max_chars:
@@ -60,6 +62,105 @@ class AssistantService:
                 break
         selected.sort(key=lambda item: item[0])
         return "\n\n".join(section for _, section in selected)[:max_chars]
+
+    @staticmethod
+    def _has_code_context(history: list[dict]) -> bool:
+        return any(
+            item["role"] == "assistant"
+            and (
+                "```" in item["content"]
+                or re.search(r"\b(?:Sub|Function|class|def)\s+\w+", item["content"])
+            )
+            for item in history[-8:]
+        )
+
+    @staticmethod
+    def _has_structured_attachment(attachments: list[dict]) -> bool:
+        return any(
+            Path(item["filename"]).suffix.casefold() in {".xlsx", ".csv", ".json"}
+            for item in attachments
+        )
+
+    @staticmethod
+    def _is_analysis_request(question: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:проанализируй|анализ|сравни|сопоставь|посчитай|сводк\w*|"
+                r"пропуск\w*|отклонени\w*|тенденци\w*|миним\w*|максим\w*|"
+                r"средн\w*|таблиц\w*|строк\w*|столбц\w*|данн\w*)\b",
+                question.casefold(),
+            )
+        )
+
+    @staticmethod
+    def _is_code_creation(question: str, has_code_context: bool) -> bool:
+        normalized = question.casefold()
+        creation = re.search(
+            r"\b(?:напиши|создай|сделай|сгенерируй|реализуй|исправь|почини|"
+            r"добавь|измени|переделай|перепиши|доработай|write|create|fix|update|refactor)\b",
+            normalized,
+        )
+        code_signal = re.search(
+            r"\b(?:код|макрос|скрипт|программ\w*|vba|python|c#|csharp|\.net|"
+            r"функци\w*|процедур\w*|класс\w*)\b",
+            normalized,
+        )
+        return bool(creation and (code_signal or has_code_context))
+
+    @staticmethod
+    def _is_code_discussion(question: str, has_code_context: bool) -> bool:
+        if not has_code_context:
+            return False
+        return bool(
+            re.search(
+                r"\b(?:почему|зачем|объясни|поясни|что значит|что делает|"
+                r"какая ошибка|в ч[её]м ошибка|как работает|чем отличается|"
+                r"на каком языке|как использовать|как запустить|куда вставить|где вставить|"
+                r"эта строка|этот блок|этот код|why|explain|what does|how does)\b",
+                question.casefold(),
+            )
+        )
+
+    @staticmethod
+    def _requests_knowledge(question: str) -> bool:
+        return bool(
+            re.search(
+                r"(?:\b(?:в|из|по)\s+баз[аеы]\s+знаний\b|"
+                r"\b(?:в|из|по)\s+документ(?:ах|ам|ов)\b|"
+                r"\bсогласно\s+(?:документ\w*|регламент\w*|инструкци\w*)\b|"
+                r"\bв\s+выбранном\s+документе\b)",
+                question.casefold(),
+            )
+        )
+
+    @classmethod
+    def _response_kind(
+        cls,
+        question: str,
+        history: list[dict],
+        attachments: list[dict],
+        interpretation: dict,
+        document_id: str | None,
+        use_rag: bool | None,
+    ) -> str:
+        has_code_context = cls._has_code_context(history)
+        if cls._is_code_creation(question, has_code_context):
+            return "code_create"
+        if cls._is_code_discussion(question, has_code_context):
+            return "code_discuss"
+
+        suggested = str(interpretation.get("response_kind") or "").strip().casefold()
+        if suggested in {"code_create", "code_discuss"}:
+            return suggested
+        if cls._has_structured_attachment(attachments) and cls._is_analysis_request(question):
+            return "analysis"
+        if suggested in cls.RESPONSE_KINDS:
+            return suggested
+        if cls._has_structured_attachment(attachments):
+            return "analysis"
+        if document_id or interpretation.get("use_knowledge") or use_rag is True:
+            return "knowledge"
+        return "conversation"
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -180,17 +281,21 @@ class AssistantService:
         custom_instruction: str = "",
         document_id: str | None = None,
         think: bool = False,
-        use_rag: bool = True,
+        use_rag: bool | None = True,
+        code_model: str | None = None,
     ) -> tuple[str, list[dict], str]:
         previous_rows = self.db.messages(conversation_id, limit=8)
         history = [dict(row) for row in previous_rows]
         attachments = [dict(row) for row in self.db.list_chat_attachments(conversation_id)]
-        if answer_mode == "Рабочий код":
+        has_code_context = self._has_code_context(history)
+        if answer_mode == "Рабочий код" or self._is_code_creation(question, has_code_context):
             interpretation = {
                 "intent": "Написание рабочего кода",
                 "search_query": question,
                 "needs_clarification": False,
                 "clarifying_question": "",
+                "response_kind": "code_create",
+                "use_knowledge": self._requests_knowledge(question),
             }
         else:
             interpretation = self.ollama.interpret_question(
@@ -199,9 +304,33 @@ class AssistantService:
                 model=model,
                 document_selected=document_id is not None or bool(attachments),
             )
+        response_kind = self._response_kind(
+            question,
+            history,
+            attachments,
+            interpretation,
+            document_id,
+            use_rag,
+        )
+        active_attachments = (
+            attachments
+            if response_kind in {"analysis", "code_create", "code_discuss"}
+            else []
+        )
+        should_search = (
+            use_rag is True
+            or (
+                use_rag is None
+                and (
+                    document_id is not None
+                    or bool(interpretation.get("use_knowledge"))
+                    or response_kind == "knowledge"
+                )
+            )
+        )
         standalone = interpretation["search_query"]
         self.db.add_message(conversation_id, "user", question)
-        if interpretation["needs_clarification"]:
+        if interpretation["needs_clarification"] and should_search:
             answer = interpretation["clarifying_question"]
             self.db.add_message(conversation_id, "assistant", answer)
             if not history:
@@ -214,7 +343,7 @@ class AssistantService:
                 document_id=document_id,
                 include_all=answer_mode == "Извлечь все данные" and document_id is not None,
             )
-            if use_rag
+            if should_search
             else []
         )
         context_size = 0
@@ -225,11 +354,11 @@ class AssistantService:
         desired_chars = max(self.settings.max_context_chars, int(num_ctx * 2.2))
         context_budget = min(120000, desired_chars, available_chars)
         bounded_attachments = []
-        direct_budget = context_budget if not use_rag else int(context_budget * 0.65)
+        direct_budget = context_budget if not should_search else int(context_budget * 0.65)
         per_attachment_budget = max(
-            1000, direct_budget // max(1, len(attachments))
+            1000, direct_budget // max(1, len(active_attachments))
         )
-        for attachment in attachments:
+        for attachment in active_attachments:
             remaining = direct_budget - context_size
             if remaining <= 0:
                 break
@@ -247,21 +376,42 @@ class AssistantService:
             bounded_results.append(result)
             context_size += len(result.chunk.content)
         results = bounded_results
-        if not results and not bounded_attachments and strict:
+        effective_strict = strict and should_search
+        if not results and not bounded_attachments and effective_strict:
             answer = "В загруженных документах информация не найдена."
             sources: list[dict] = []
         else:
+            effective_mode = answer_mode
+            if response_kind == "code_create":
+                effective_mode = "Рабочий код"
+            elif response_kind == "code_discuss":
+                effective_mode = "Обсуждение кода"
+            elif response_kind == "analysis":
+                effective_mode = "Аналитический разбор"
+                analysis_rule = (
+                    "Опирайся на вычисленную сводку по всему набору данных. "
+                    "Отделяй факты из сводки от наблюдений по отдельным строкам; "
+                    "не делай точных расчётов, которых нет в источнике."
+                )
+                custom_instruction = "\n".join(
+                    value for value in [custom_instruction.strip(), analysis_rule] if value
+                )
+            effective_model = (
+                (code_model or model)
+                if response_kind in {"code_create", "code_discuss"}
+                else model
+            )
             answer = self.ollama.answer(
                 question,
                 results,
                 history,
-                strict=strict,
-                model=model,
+                strict=effective_strict,
+                model=effective_model,
                 temperature=temperature,
                 num_predict=num_predict,
                 top_p=top_p,
                 num_ctx=num_ctx,
-                answer_mode=answer_mode,
+                answer_mode=effective_mode,
                 custom_instruction=custom_instruction,
                 think=think,
                 attachments=bounded_attachments,

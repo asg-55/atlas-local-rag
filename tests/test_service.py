@@ -9,6 +9,21 @@ from rag_assistant.service import AssistantService
 
 
 class AssistantServiceTests(unittest.TestCase):
+    @staticmethod
+    def _routed_service(history, attachments=None):
+        service = AssistantService.__new__(AssistantService)
+        service.db = Mock()
+        service.db.messages.side_effect = [
+            history,
+            history + [{"role": "user"}, {"role": "assistant"}],
+        ]
+        service.db.list_chat_attachments.return_value = attachments or []
+        service.ollama = Mock()
+        service.retriever = Mock()
+        service.retriever.search.return_value = []
+        service.settings = Mock(max_context_chars=24000)
+        return service
+
     def test_clarifying_question_is_saved_without_running_retrieval(self):
         service = AssistantService.__new__(AssistantService)
         service.db = Mock()
@@ -58,6 +73,107 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertEqual("Напиши макрос", query)
         service.ollama.interpret_question.assert_not_called()
         service.retriever.search.assert_not_called()
+
+    def test_code_follow_up_is_discussed_without_regenerating_full_solution(self):
+        history = [
+            {"role": "user", "content": "Напиши макрос"},
+            {"role": "assistant", "content": "```vba\nSub Test()\nEnd Sub\n```"},
+        ]
+        service = self._routed_service(history)
+        service.ollama.interpret_question.return_value = {
+            "intent": "Объяснение кода",
+            "search_query": "язык и запуск предыдущего макроса",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "response_kind": "conversation",
+            "use_knowledge": False,
+        }
+        service.ollama.answer.return_value = "Это VBA; макрос запускается из Excel."
+
+        answer, sources, _ = service.answer(
+            "conversation",
+            "Это на каком языке написано и как это использовать?",
+            strict=False,
+            model="general",
+            code_model="coder",
+            use_rag=None,
+        )
+
+        self.assertIn("VBA", answer)
+        self.assertEqual([], sources)
+        service.retriever.search.assert_not_called()
+        self.assertEqual("Обсуждение кода", service.ollama.answer.call_args.kwargs["answer_mode"])
+        self.assertEqual("coder", service.ollama.answer.call_args.kwargs["model"])
+
+    def test_general_conversation_does_not_search_rag_in_auto_mode(self):
+        service = self._routed_service([])
+        service.ollama.interpret_question.return_value = {
+            "intent": "Обычный разговор",
+            "search_query": "объясни простыми словами",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "response_kind": "conversation",
+            "use_knowledge": False,
+        }
+        service.ollama.answer.return_value = "Простое объяснение."
+
+        answer, _, _ = service.answer(
+            "conversation", "Объясни простыми словами", strict=False, use_rag=None
+        )
+
+        self.assertEqual("Простое объяснение.", answer)
+        service.retriever.search.assert_not_called()
+
+    def test_old_table_attachment_does_not_hijack_unrelated_follow_up(self):
+        attachment = {
+            "filename": "signals.csv",
+            "extracted_text": "Сводка набора данных: signals.csv",
+        }
+        service = self._routed_service([], [attachment])
+        service.ollama.interpret_question.return_value = {
+            "intent": "Обычный разговор",
+            "search_query": "другой вопрос",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "response_kind": "conversation",
+            "use_knowledge": False,
+        }
+        service.ollama.answer.return_value = "Пожалуйста."
+
+        _, sources, _ = service.answer(
+            "conversation", "Спасибо, теперь другой вопрос", strict=False, use_rag=None
+        )
+
+        self.assertEqual([], sources)
+        self.assertEqual([], service.ollama.answer.call_args.kwargs["attachments"])
+
+    def test_structured_attachment_uses_analysis_and_can_combine_with_rag(self):
+        attachment = {
+            "filename": "signals.csv",
+            "extracted_text": "Сводка набора данных: signals.csv\nСтрок данных: 100",
+        }
+        service = self._routed_service([], [attachment])
+        service.ollama.interpret_question.return_value = {
+            "intent": "Сопоставление данных",
+            "search_query": "сравнить сигналы с нормативами",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "response_kind": "analysis",
+            "use_knowledge": True,
+        }
+        service.ollama.answer.return_value = "Сопоставление выполнено."
+
+        _, sources, _ = service.answer(
+            "conversation",
+            "Сравни таблицу с нормативами из базы",
+            strict=False,
+            use_rag=None,
+        )
+
+        service.retriever.search.assert_called_once()
+        self.assertEqual("Аналитический разбор", service.ollama.answer.call_args.kwargs["answer_mode"])
+        self.assertIn("вычисленную сводку", service.ollama.answer.call_args.kwargs["custom_instruction"])
+        self.assertEqual("signals.csv", sources[0]["filename"])
 
     def test_attachment_is_persistent_but_not_added_to_rag(self):
         with tempfile.TemporaryDirectory() as directory:

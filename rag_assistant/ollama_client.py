@@ -118,14 +118,16 @@ class OllamaClient:
             f"{'Пользователь' if item['role'] == 'user' else 'Ассистент'}: {item['content'][:1200]}"
             for item in history[-6:]
         )
-        prompt = f"""Ты — интерпретатор запросов к локальной базе производственных документов.
-Определи намерение пользователя и подготовь самостоятельный поисковый запрос.
+        prompt = f"""Ты — маршрутизатор локального рабочего ассистента.
+Определи намерение пользователя, нужный способ ответа и подготовь самостоятельный поисковый запрос, если он понадобится.
 
 Верни только JSON с полями:
 - intent: короткое название задачи на русском;
 - search_query: точный самостоятельный запрос для поиска по документам;
 - needs_clarification: true или false;
-- clarifying_question: один короткий уточняющий вопрос или пустая строка.
+- clarifying_question: один короткий уточняющий вопрос или пустая строка;
+- response_kind: ровно одно из conversation, knowledge, analysis, code_create, code_discuss;
+- use_knowledge: true, только если для ответа нужно искать в постоянной базе знаний.
 
 Правила:
 1. Исправляй опечатки и раскрывай ссылки «это», «там», «по нему» из истории.
@@ -134,6 +136,10 @@ class OllamaClient:
 4. Не уточняй простой фактический вопрос, даже если он сформулирован кратко.
 5. Если выбран конкретный документ, запросы «сделай таблицу», «вытащи данные» и подобные считаются достаточно определёнными.
 6. Не отвечай на сам вопрос и не придумывай факты.
+7. code_create — создание, исправление или существенное изменение кода. code_discuss — объяснение, диагностика или уточняющий вопрос о ранее показанном коде без требования переписать его полностью.
+8. analysis — анализ таблицы или другого вложения. Вложение уже доступно напрямую и само по себе не требует use_knowledge=true.
+9. knowledge — вопрос, который требует сведений из постоянной базы документов. conversation — обычное объяснение или рабочее обсуждение без поиска.
+10. Инструменты можно комбинировать: например, анализ вложения может дополнительно использовать базу, если пользователь явно просит сопоставить его с постоянными документами.
 
 Выбран конкретный документ: {'да' if document_selected else 'нет'}
 История:
@@ -159,11 +165,20 @@ JSON:"""
             needs_clarification = (
                 needs_value is True or str(needs_value).strip().lower() == "true"
             ) and bool(clarification)
+            response_kind = str(parsed.get("response_kind") or "").strip().casefold()
+            if response_kind not in {
+                "conversation", "knowledge", "analysis", "code_create", "code_discuss"
+            }:
+                response_kind = ""
+            knowledge_value = parsed.get("use_knowledge")
+            use_knowledge = knowledge_value is True or str(knowledge_value).strip().lower() == "true"
             return {
                 "intent": str(parsed.get("intent") or "Поиск по документам").strip(),
                 "search_query": search_query or question,
                 "needs_clarification": needs_clarification,
                 "clarifying_question": clarification if needs_clarification else "",
+                "response_kind": response_kind,
+                "use_knowledge": use_knowledge,
             }
         except (requests.RequestException, RuntimeError, json.JSONDecodeError, TypeError, ValueError):
             return {
@@ -171,6 +186,8 @@ JSON:"""
                 "search_query": self.standalone_question(question, history, model=model),
                 "needs_clarification": False,
                 "clarifying_question": "",
+                "response_kind": "conversation",
+                "use_knowledge": False,
             }
 
     def standalone_question(self, question: str, history: list[dict], model: str | None = None) -> str:
@@ -227,6 +244,43 @@ JSON:"""
             f"{'Пользователь' if item['role'] == 'user' else 'Ассистент'}: {item['content'][:1000]}"
             for item in history[-6:]
         )
+        code_history_text = "\n\n".join(
+            f"{'Пользователь' if item['role'] == 'user' else 'Ассистент'}:\n{item['content'][:8000]}"
+            for item in history[-6:]
+        )[-24000:]
+        mode_instructions = {
+            "Краткий ответ": "Дай прямой ответ в 2-5 предложениях. Не добавляй второстепенные сведения.",
+            "Подробный ответ": "Сначала дай прямой вывод, затем подробное объяснение с параметрами, условиями и оговорками.",
+            "Извлечь все данные": "Извлеки все относящиеся к запросу поля, значения, единицы и строки. Ничего не сокращай. Табличные данные оформи Markdown-таблицей.",
+            "Аналитический разбор": "Сделай структурированный анализ: вывод, подтверждающие данные, зависимости, возможные противоречия и недостающие сведения.",
+        }
+        if answer_mode == "Обсуждение кода":
+            prompt = f"""Ты — практичный помощник по программированию. Продолжи текущий разговор о ранее показанном коде и ответь на русском языке.
+
+Правила:
+1. Ответь именно на последний вопрос: объясни поведение, найди причину ошибки или уточни важное допущение.
+2. Не генерируй заново полный код, если пользователь прямо не попросил переписать решение целиком.
+3. Если нужна правка, покажи только минимальный заменяемый фрагмент и точно укажи место изменения.
+4. Учитывай весь доступный предыдущий код и не предлагай функции, которых в нём нет.
+5. Не утверждай, что код был запущен или проверен на компьютере пользователя.
+
+Недавний диалог и код:
+{code_history_text or 'нет'}
+
+Дополнительные материалы:
+{context or 'нет'}
+
+Последний вопрос: {question}
+Ответ:"""
+            return self.generate(
+                prompt,
+                temperature=min(temperature, 0.2),
+                num_predict=num_predict,
+                model=model,
+                top_p=top_p,
+                num_ctx=num_ctx,
+                think=think,
+            )
         if answer_mode == "Рабочий код":
             extra_rule = (
                 f"\nДополнительная инструкция пользователя: {custom_instruction.strip()}"
@@ -249,8 +303,8 @@ JSON:"""
 10. Не добавляй архитектуру, классы, настройки и зависимости, которые не нужны для поставленной задачи. Перед ответом молча проверь код на ошибки типов, пустые входы, отсутствующие файлы или листы и повторный запуск.
 {extra_rule}
 
-Недавний диалог:
-{history_text or 'нет'}
+Недавний диалог и ранее показанный код:
+{code_history_text or 'нет'}
 
 Материалы диалога:
 {context or 'нет'}
@@ -295,18 +349,42 @@ JSON:"""
                 )
             except (requests.RequestException, RuntimeError):
                 return draft
+        mode_instruction = mode_instructions.get(answer_mode, mode_instructions["Подробный ответ"])
+        if not context:
+            extra_rule = (
+                f"\nДополнительная инструкция пользователя: {custom_instruction.strip()}"
+                if custom_instruction.strip()
+                else ""
+            )
+            prompt = f"""Ты — локальный рабочий ассистент Atlas. Ответь на русском языке. {mode_instruction}
+
+Правила:
+1. Продолжай текущий диалог и учитывай предыдущие сообщения.
+2. Дай практичный прямой ответ без выдуманных ссылок на документы и без требования специального промпта.
+3. Если данных действительно недостаточно, задай один конкретный уточняющий вопрос.
+4. Не утверждай, что выполнил код, открыл файл или проверил внешнюю систему, если этого не происходило.
+5. Не усложняй решение возможностями, которых пользователь не просил.
+{extra_rule}
+
+Недавний диалог:
+{code_history_text or 'нет'}
+
+Вопрос: {question}
+Ответ:"""
+            return self.generate(
+                prompt,
+                temperature=temperature,
+                num_predict=num_predict,
+                model=model,
+                top_p=top_p,
+                num_ctx=num_ctx,
+                think=think,
+            )
         fallback = (
             "Используй только факты из источников. Если отдельное поле отсутствует, пометь именно его как «не указано», но продолжай извлекать остальные данные."
             if strict
             else 'Если источников недостаточно, явно отдели общие знания фразой: "В документах не нашёл, но по общим данным..."'
         )
-        mode_instructions = {
-            "Краткий ответ": "Дай прямой ответ в 2-5 предложениях. Не добавляй второстепенные сведения.",
-            "Подробный ответ": "Сначала дай прямой вывод, затем подробное объяснение с параметрами, условиями и оговорками.",
-            "Извлечь все данные": "Извлеки все относящиеся к запросу поля, значения, единицы и строки. Ничего не сокращай. Табличные данные оформи Markdown-таблицей.",
-            "Аналитический разбор": "Сделай структурированный анализ: вывод, подтверждающие данные, зависимости, возможные противоречия и недостающие сведения.",
-        }
-        mode_instruction = mode_instructions.get(answer_mode, mode_instructions["Подробный ответ"])
         extra_rule = (
             f"\nДополнительная инструкция пользователя: {custom_instruction.strip()}"
             if custom_instruction.strip()
