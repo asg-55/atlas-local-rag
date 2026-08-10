@@ -125,6 +125,22 @@ class OllamaClientTests(unittest.TestCase):
         self.assertIn("for row in rows", prompt)
         self.assertIn("Не генерируй заново полный код", prompt)
 
+    def test_code_improvement_advice_explicitly_forbids_rewritten_code(self):
+        client = OllamaClient("http://ollama", "qwen3.5:9b")
+        client.generate = Mock(return_value="Сначала добавьте проверку конфликтов имён.")
+
+        client.answer(
+            "Как можно усилить полученный код?",
+            [],
+            [{"role": "assistant", "content": "```vba\nSub MoveFiles()\nEnd Sub\n```"}],
+            strict=False,
+            answer_mode="Обсуждение кода",
+        )
+
+        prompt = client.generate.call_args.args[0]
+        self.assertIn("предложи выбрать вариант", prompt)
+        self.assertIn("не показывай полный или изменённый код", prompt)
+
     def test_general_conversation_does_not_invent_document_sources(self):
         client = OllamaClient("http://ollama", "qwen3.5:9b")
         client.generate = Mock(return_value="Короткое объяснение")

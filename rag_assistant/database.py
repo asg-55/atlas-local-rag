@@ -79,6 +79,8 @@ class Database:
                     role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
                     content TEXT NOT NULL,
                     sources_json TEXT,
+                    status TEXT NOT NULL DEFAULT 'complete',
+                    error TEXT,
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_conversation
@@ -131,6 +133,15 @@ class Database:
                 );
                 """
             )
+            message_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+            }
+            if "status" not in message_columns:
+                conn.execute(
+                    "ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'complete'"
+                )
+            if "error" not in message_columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN error TEXT")
             self._initialize_fts(conn)
 
     def _initialize_fts(self, conn: sqlite3.Connection) -> None:
@@ -442,15 +453,53 @@ class Database:
             )
             return str(row["stored_path"])
 
-    def add_message(self, conversation_id: str, role: str, content: str, sources=None) -> None:
+    def add_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        sources=None,
+        status: str = "complete",
+        error: str | None = None,
+    ) -> int:
+        if status not in {"pending", "complete", "failed"}:
+            raise ValueError(f"Unknown message status: {status}")
         with self.connect() as conn:
-            conn.execute(
-                "INSERT INTO messages (conversation_id, role, content, sources_json, created_at) VALUES (?, ?, ?, ?, ?)",
-                (conversation_id, role, content, json.dumps(sources, ensure_ascii=False) if sources else None, utc_now()),
+            cursor = conn.execute(
+                """INSERT INTO messages
+                (conversation_id, role, content, sources_json, status, error, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    conversation_id,
+                    role,
+                    content,
+                    json.dumps(sources, ensure_ascii=False) if sources else None,
+                    status,
+                    error,
+                    utc_now(),
+                ),
             )
             conn.execute(
                 "UPDATE conversations SET updated_at=? WHERE id=?",
                 (utc_now(), conversation_id),
+            )
+            return int(cursor.lastrowid)
+
+    def message(self, message_id: int):
+        with self.connect() as conn:
+            return conn.execute(
+                "SELECT * FROM messages WHERE id=?", (message_id,)
+            ).fetchone()
+
+    def set_message_status(
+        self, message_id: int, status: str, error: str | None = None
+    ) -> None:
+        if status not in {"pending", "complete", "failed"}:
+            raise ValueError(f"Unknown message status: {status}")
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE messages SET status=?, error=? WHERE id=?",
+                (status, error, message_id),
             )
 
     def messages(self, conversation_id: str, limit: int | None = None):

@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 from rag_assistant.config import Settings
 from rag_assistant.database import Database
@@ -104,6 +104,103 @@ class AssistantServiceTests(unittest.TestCase):
         service.retriever.search.assert_not_called()
         self.assertEqual("Обсуждение кода", service.ollama.answer.call_args.kwargs["answer_mode"])
         self.assertEqual("coder", service.ollama.answer.call_args.kwargs["model"])
+
+    def test_improvement_question_is_deterministically_discussed(self):
+        history = [
+            {"role": "assistant", "content": "```vba\nSub Test()\nEnd Sub\n```"},
+        ]
+        service = self._routed_service(history)
+        service.ollama.interpret_question.return_value = {
+            "intent": "Улучшение кода",
+            "search_query": "Как можно усилить полученный код?",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "response_kind": "conversation",
+            "use_knowledge": False,
+        }
+        service.ollama.answer.return_value = "Сначала добавьте проверки и журналирование."
+
+        service.answer(
+            "conversation",
+            "Как можно усилить полученный код?",
+            strict=False,
+            code_model="coder",
+            use_rag=None,
+        )
+
+        self.assertEqual(
+            "Обсуждение кода", service.ollama.answer.call_args.kwargs["answer_mode"]
+        )
+
+    def test_generation_failure_marks_saved_question_for_retry(self):
+        service = AssistantService.__new__(AssistantService)
+        service.db = Mock()
+        service.db.messages.return_value = []
+        service.db.add_message.return_value = 42
+        service.db.list_chat_attachments.return_value = []
+        service.ollama = Mock()
+        service.ollama.interpret_question.side_effect = RuntimeError("model disconnected")
+        service.retriever = Mock()
+        service.settings = Mock(max_context_chars=24000)
+
+        with self.assertRaisesRegex(RuntimeError, "model disconnected"):
+            service.answer("conversation", "Продолжи", strict=False, use_rag=None)
+
+        service.db.add_message.assert_called_once_with(
+            "conversation", "user", "Продолжи", status="pending"
+        )
+        service.db.set_message_status.assert_called_once_with(
+            42, "failed", "model disconnected"
+        )
+
+    def test_retry_reuses_unanswered_user_message_without_duplicate(self):
+        pending = {
+            "id": 29,
+            "conversation_id": "conversation",
+            "role": "user",
+            "content": "Как улучшить код?",
+            "status": "failed",
+            "error": "connection lost",
+        }
+        service = AssistantService.__new__(AssistantService)
+        service.db = Mock()
+        service.db.messages.side_effect = [
+            [pending],
+            [pending, {"role": "assistant", "content": "Добавьте проверки."}],
+        ]
+        service.db.message.return_value = pending
+        service.db.list_chat_attachments.return_value = []
+        service.ollama = Mock()
+        service.ollama.interpret_question.return_value = {
+            "intent": "Улучшение кода",
+            "search_query": "Как улучшить код?",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "response_kind": "conversation",
+            "use_knowledge": False,
+        }
+        service.ollama.answer.return_value = "Добавьте проверки."
+        service.retriever = Mock()
+        service.settings = Mock(max_context_chars=24000)
+
+        answer, _, _ = service.answer(
+            "conversation",
+            "ignored",
+            strict=False,
+            use_rag=None,
+            retry_message_id=29,
+        )
+
+        self.assertEqual("Добавьте проверки.", answer)
+        self.assertEqual(1, service.db.add_message.call_count)
+        self.assertEqual("assistant", service.db.add_message.call_args.args[1])
+        self.assertEqual(
+            [
+                call(29, "pending"),
+                call(29, "complete"),
+            ],
+            service.db.set_message_status.call_args_list,
+        )
 
     def test_general_conversation_does_not_search_rag_in_auto_mode(self):
         service = self._routed_service([])

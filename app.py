@@ -4,6 +4,7 @@ import hmac
 import hashlib
 import html
 import io
+import logging
 import zipfile
 from pathlib import Path
 
@@ -26,6 +27,9 @@ from rag_assistant.report_extractor import (
     render_pdf_page,
 )
 from rag_assistant.report_jobs import ReportJobManager
+
+
+logger = logging.getLogger(__name__)
 
 
 st.set_page_config(page_title="Atlas · рабочая база знаний", page_icon="◈", layout="wide")
@@ -553,6 +557,26 @@ if active_section == "Чат":
                     service.delete_chat_attachment(conversation_id, attachment["id"])
                     st.session_state["chat-attachment-notice"] = "Вложение удалено из диалога."
                     st.rerun()
+    def generate_chat_answer(question: str, retry_message_id: int | None = None):
+        return service.answer(
+            conversation_id,
+            question,
+            strict=strict_mode,
+            model=selected_model,
+            code_model=code_model,
+            temperature=temperature,
+            num_predict=num_predict,
+            top_p=top_p,
+            num_ctx=num_ctx,
+            final_k=final_k,
+            answer_mode=answer_mode,
+            custom_instruction=custom_instruction,
+            document_id=selected_document_id,
+            think=think,
+            use_rag=rag_policy,
+            retry_message_id=retry_message_id,
+        )
+
     messages = db.messages(conversation_id)
     if not messages:
         st.markdown(
@@ -565,9 +589,37 @@ if active_section == "Чат":
             st.markdown(message["content"])
             if message["role"] == "assistant":
                 render_sources(service.decode_sources(message))
+    unanswered_message = messages[-1] if messages and messages[-1]["role"] == "user" else None
+    if unanswered_message:
+        if unanswered_message["status"] == "failed":
+            st.error("Ответ не был сформирован. Вопрос сохранён — его можно повторить.")
+        else:
+            st.warning("Формирование ответа было прервано. Вопрос сохранён.")
+        if unanswered_message["error"]:
+            with st.expander("Техническая причина", expanded=False):
+                st.code(unanswered_message["error"])
+        if st.button(
+            "Повторить ответ",
+            key=f"retry-message-{unanswered_message['id']}",
+            type="primary",
+        ):
+            try:
+                with st.spinner("Повторно готовлю ответ…"):
+                    generate_chat_answer(
+                        unanswered_message["content"],
+                        retry_message_id=unanswered_message["id"],
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to retry message %s in conversation %s",
+                    unanswered_message["id"],
+                    conversation_id,
+                )
+            st.rerun()
     st.caption("Можно продолжать обсуждение результата: Atlas учитывает предыдущие ответы, код и вложения диалога.")
     submission = st.chat_input(
         "Напишите сообщение или прикрепите файл без добавления в RAG…",
+        disabled=unanswered_message is not None,
         accept_file="multiple",
         file_type=["pdf", "doc", "docx", "xlsx", "txt", "md", "csv", "json", "jpg", "jpeg", "png", "mp3", "wav", "m4a", "ogg", "flac"],
     )
@@ -605,29 +657,13 @@ if active_section == "Чат":
         with st.chat_message("assistant"):
             try:
                 with st.spinner("Определяю задачу и готовлю ответ…"):
-                    answer, sources, standalone = service.answer(
-                        conversation_id,
-                        question,
-                        strict=strict_mode,
-                        model=selected_model,
-                        code_model=code_model,
-                        temperature=temperature,
-                        num_predict=num_predict,
-                        top_p=top_p,
-                        num_ctx=num_ctx,
-                        final_k=final_k,
-                        answer_mode=answer_mode,
-                        custom_instruction=custom_instruction,
-                        document_id=selected_document_id,
-                        think=think,
-                        use_rag=rag_policy,
-                    )
+                    answer, sources, standalone = generate_chat_answer(question)
                 st.markdown(answer)
                 render_sources(sources)
                 if sources and standalone.casefold().strip() != question.casefold().strip():
                     st.caption(f"Поисковый запрос с учётом контекста: {standalone}")
-            except Exception as exc:
-                st.error(f"Не удалось сформировать ответ: {exc}")
+            except Exception:
+                logger.exception("Failed to answer in conversation %s", conversation_id)
         st.rerun()
 
 if active_section == "Файлы":

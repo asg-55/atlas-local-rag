@@ -25,8 +25,14 @@ class DatabaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             db = Database(Path(folder) / "test.db")
             conversation = db.create_conversation("Проверка")
-            db.add_message(conversation, "user", "Вопрос")
+            message_id = db.add_message(
+                conversation, "user", "Вопрос", status="pending"
+            )
             self.assertEqual("Вопрос", db.messages(conversation)[0]["content"])
+            self.assertEqual("pending", db.message(message_id)["status"])
+            db.set_message_status(message_id, "failed", "model disconnected")
+            self.assertEqual("failed", db.message(message_id)["status"])
+            self.assertEqual("model disconnected", db.message(message_id)["error"])
             doc_id = db.create_document("a.pdf", "abc", ".pdf", 10, "a.pdf")
             self.assertEqual(doc_id, db.find_document_by_hash("abc")["id"])
 

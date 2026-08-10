@@ -116,7 +116,8 @@ class AssistantService:
                 r"\b(?:почему|зачем|объясни|поясни|что значит|что делает|"
                 r"какая ошибка|в ч[её]м ошибка|как работает|чем отличается|"
                 r"на каком языке|как использовать|как запустить|куда вставить|где вставить|"
-                r"эта строка|этот блок|этот код|why|explain|what does|how does)\b",
+                r"как (?:можно )?(?:усилить|улучшить|доработать)|что (?:можно )?(?:усилить|улучшить|доработать)|"
+                r"какие улучшения|эта строка|этот блок|этот код|why|explain|what does|how does)\b",
                 question.casefold(),
             )
         )
@@ -283,9 +284,77 @@ class AssistantService:
         think: bool = False,
         use_rag: bool | None = True,
         code_model: str | None = None,
+        retry_message_id: int | None = None,
     ) -> tuple[str, list[dict], str]:
-        previous_rows = self.db.messages(conversation_id, limit=8)
-        history = [dict(row) for row in previous_rows]
+        previous_rows = [dict(row) for row in self.db.messages(conversation_id, limit=9)]
+        if retry_message_id is not None:
+            retry_row = self.db.message(retry_message_id)
+            if (
+                retry_row is None
+                or retry_row["conversation_id"] != conversation_id
+                or retry_row["role"] != "user"
+                or not previous_rows
+                or previous_rows[-1]["id"] != retry_message_id
+            ):
+                raise ValueError("Повторить можно только последний вопрос без ответа.")
+            question = retry_row["content"]
+            history = [row for row in previous_rows if row["id"] != retry_message_id][-8:]
+            user_message_id = retry_message_id
+            self.db.set_message_status(user_message_id, "pending")
+        else:
+            history = previous_rows[-8:]
+            user_message_id = self.db.add_message(
+                conversation_id, "user", question, status="pending"
+            )
+
+        try:
+            answer, sources, standalone = self._generate_answer(
+                conversation_id,
+                question,
+                history,
+                strict=strict,
+                model=model,
+                temperature=temperature,
+                num_predict=num_predict,
+                top_p=top_p,
+                num_ctx=num_ctx,
+                final_k=final_k,
+                answer_mode=answer_mode,
+                custom_instruction=custom_instruction,
+                document_id=document_id,
+                think=think,
+                use_rag=use_rag,
+                code_model=code_model,
+            )
+        except Exception as exc:
+            self.db.set_message_status(user_message_id, "failed", str(exc)[:2000])
+            raise
+
+        self.db.add_message(conversation_id, "assistant", answer, sources)
+        self.db.set_message_status(user_message_id, "complete")
+        if not history:
+            self.db.rename_conversation(conversation_id, question[:70])
+        return answer, sources, standalone
+
+    def _generate_answer(
+        self,
+        conversation_id: str,
+        question: str,
+        history: list[dict],
+        strict: bool = True,
+        model: str | None = None,
+        temperature: float = 0.2,
+        num_predict: int = 2200,
+        top_p: float = 0.9,
+        num_ctx: int = 16384,
+        final_k: int | None = None,
+        answer_mode: str = "Подробный ответ",
+        custom_instruction: str = "",
+        document_id: str | None = None,
+        think: bool = False,
+        use_rag: bool | None = True,
+        code_model: str | None = None,
+    ) -> tuple[str, list[dict], str]:
         attachments = [dict(row) for row in self.db.list_chat_attachments(conversation_id)]
         has_code_context = self._has_code_context(history)
         if answer_mode == "Рабочий код" or self._is_code_creation(question, has_code_context):
@@ -329,12 +398,8 @@ class AssistantService:
             )
         )
         standalone = interpretation["search_query"]
-        self.db.add_message(conversation_id, "user", question)
         if interpretation["needs_clarification"] and should_search:
             answer = interpretation["clarifying_question"]
-            self.db.add_message(conversation_id, "assistant", answer)
-            if not history:
-                self.db.rename_conversation(conversation_id, question[:70])
             return answer, [], standalone
         results = (
             self.retriever.search(
@@ -425,10 +490,6 @@ class AssistantService:
                 }
                 for attachment in bounded_attachments
             ] + [result.as_source() for result in results]
-        self.db.add_message(conversation_id, "assistant", answer, sources)
-        messages = self.db.messages(conversation_id)
-        if len(messages) == 2:
-            self.db.rename_conversation(conversation_id, question[:70])
         return answer, sources, standalone
 
     @staticmethod
