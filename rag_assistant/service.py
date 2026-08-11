@@ -135,6 +135,18 @@ class AssistantService:
             )
         )
 
+    @staticmethod
+    def _starts_new_topic(question: str) -> bool:
+        return bool(
+            re.search(
+                r"(?:^|[.!?]\s*)(?:спасибо[,.]?\s+)?(?:а\s+)?теперь\b|"
+                r"(?:^|[.!?]\s*)(?:другой|новый|отдельный)\s+вопрос\b|"
+                r"(?:^|[.!?]\s*)сменим\s+тему\b|"
+                r"(?:^|[.!?]\s*)(?:now|new question|let'?s change the subject)\b",
+                question.casefold(),
+            )
+        )
+
     @classmethod
     def _response_kind(
         cls,
@@ -372,7 +384,7 @@ class AssistantService:
                 question,
                 history,
                 model=model,
-                document_selected=document_id is not None or bool(attachments),
+                document_selected=document_id is not None,
             )
         response_kind = self._response_kind(
             question,
@@ -382,6 +394,16 @@ class AssistantService:
             document_id,
             use_rag,
         )
+        explicit_knowledge_request = (
+            document_id is not None or self._requests_knowledge(question)
+        )
+        if (
+            attachments
+            and use_rag is None
+            and not explicit_knowledge_request
+            and response_kind == "knowledge"
+        ):
+            response_kind = "conversation"
         active_attachments = (
             attachments
             if response_kind in {"analysis", "code_create", "code_discuss"}
@@ -393,7 +415,14 @@ class AssistantService:
                 use_rag is None
                 and (
                     document_id is not None
-                    or bool(interpretation.get("use_knowledge"))
+                    or (
+                        bool(interpretation.get("use_knowledge"))
+                        and (
+                            not attachments
+                            or explicit_knowledge_request
+                            or response_kind == "analysis"
+                        )
+                    )
                     or response_kind == "knowledge"
                 )
             )
@@ -443,6 +472,11 @@ class AssistantService:
             context_size += len(result.chunk.content)
         results = bounded_results
         effective_strict = strict and should_search
+        answer_history = (
+            []
+            if response_kind == "conversation" and self._starts_new_topic(question)
+            else history
+        )
         if not results and not bounded_attachments and effective_strict:
             answer = "В загруженных документах информация не найдена."
             sources: list[dict] = []
@@ -483,7 +517,9 @@ class AssistantService:
                 "attachments": bounded_attachments,
             }
             try:
-                answer = self.ollama.answer(question, results, history, **answer_options)
+                answer = self.ollama.answer(
+                    question, results, answer_history, **answer_options
+                )
             except ModelRequestError:
                 fallback_model = model or getattr(self.ollama, "model", None)
                 if (
@@ -500,7 +536,9 @@ class AssistantService:
                     num_ctx=fallback_ctx,
                     num_predict=fallback_predict,
                 )
-                answer = self.ollama.answer(question, results, history, **answer_options)
+                answer = self.ollama.answer(
+                    question, results, answer_history, **answer_options
+                )
             sources = [
                 {
                     "filename": attachment["filename"],

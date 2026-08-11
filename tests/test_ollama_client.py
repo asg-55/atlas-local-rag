@@ -141,6 +141,29 @@ class OllamaClientTests(unittest.TestCase):
         self.assertIn("предложи выбрать вариант", prompt)
         self.assertIn("не показывай полный или изменённый код", prompt)
 
+    def test_code_improvement_advice_removes_fenced_code(self):
+        client = OllamaClient("http://ollama", "qwen3.5:9b")
+        client.generate = Mock(
+            side_effect=[
+                "Добавьте журналирование.\n```vba\nSub Unwanted()\nEnd Sub\n```",
+                "1. Добавьте журналирование — это упростит диагностику.\n\nВыберите улучшение.",
+            ]
+        )
+
+        answer = client.answer(
+            "Как можно усилить этот код?",
+            [],
+            [{"role": "assistant", "content": "```vba\nSub Test()\nEnd Sub\n```"}],
+            strict=False,
+            answer_mode="Обсуждение кода",
+        )
+
+        self.assertNotIn("```", answer)
+        self.assertIn("журналирование", answer)
+        self.assertEqual(2, client.generate.call_count)
+        correction_prompt = client.generate.call_args_list[1].args[0]
+        self.assertIn("Полностью убери весь программный код", correction_prompt)
+
     def test_code_change_question_requires_actual_diff(self):
         client = OllamaClient("http://ollama", "qwen3.5:9b")
         client.generate = Mock(return_value="Добавлена только переменная filePattern.")
@@ -182,7 +205,28 @@ class OllamaClientTests(unittest.TestCase):
         prompt = client.generate.call_args.args[0]
         self.assertIn("локальный рабочий ассистент Atlas", prompt)
         self.assertIn("без выдуманных ссылок на документы", prompt)
+        self.assertIn("не добавляй разделы «Параметры ответа»", prompt)
+        self.assertIn("не упоминай прежние вложения", prompt)
         self.assertNotIn("После каждого существенного утверждения", prompt)
+
+    def test_strict_rag_prompt_stops_after_missing_main_fact(self):
+        client = OllamaClient("http://ollama", "qwen3.5:9b")
+        client.generate = Mock(return_value="В источниках серийный номер не указан.")
+        result = Mock()
+        result.chunk.filename = "policy.txt"
+        result.chunk.location = "стр. 1"
+        result.chunk.content = "Давление 6,4 МПа"
+
+        client.answer(
+            "Какой серийный номер компрессора?",
+            [result],
+            [],
+            strict=True,
+        )
+
+        prompt = client.generate.call_args.args[0]
+        self.assertIn("ответь одной короткой фразой", prompt)
+        self.assertIn("Не добавляй таблицу", prompt)
 
     @patch("rag_assistant.ollama_client.requests.post")
     def test_retries_without_thinking_when_final_answer_is_empty(self, post):

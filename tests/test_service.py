@@ -287,6 +287,66 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertEqual([], sources)
         self.assertEqual([], service.ollama.answer.call_args.kwargs["attachments"])
 
+    def test_old_attachment_cannot_trigger_global_rag_from_model_guess(self):
+        attachment = {
+            "filename": "signals.csv",
+            "extracted_text": "Dataset summary: signals.csv",
+        }
+        service = self._routed_service([], [attachment])
+        service.ollama.interpret_question.return_value = {
+            "intent": "Knowledge lookup",
+            "search_query": "what is a backup",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "response_kind": "knowledge",
+            "use_knowledge": True,
+        }
+        service.ollama.answer.return_value = "A backup is a separate copy of data."
+
+        answer, sources, _ = service.answer(
+            "conversation",
+            "Please explain what a backup is",
+            strict=False,
+            use_rag=None,
+        )
+
+        self.assertEqual("A backup is a separate copy of data.", answer)
+        self.assertEqual([], sources)
+        service.retriever.search.assert_not_called()
+        self.assertEqual([], service.ollama.answer.call_args.kwargs["attachments"])
+        self.assertFalse(
+            service.ollama.interpret_question.call_args.kwargs["document_selected"]
+        )
+
+    def test_explicit_topic_change_drops_old_history_from_general_answer(self):
+        history = [
+            {"role": "user", "content": "Проанализируй вложенную таблицу"},
+            {"role": "assistant", "content": "В signals.csv три строки."},
+        ]
+        attachment = {
+            "filename": "signals.csv",
+            "extracted_text": "Dataset summary: signals.csv",
+        }
+        service = self._routed_service(history, [attachment])
+        service.ollama.interpret_question.return_value = {
+            "intent": "Обычный разговор",
+            "search_query": "что такое резервное копирование",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "response_kind": "conversation",
+            "use_knowledge": False,
+        }
+        service.ollama.answer.return_value = "Это отдельная копия важных данных."
+
+        service.answer(
+            "conversation",
+            "Спасибо. Теперь объясни, что такое резервное копирование.",
+            strict=False,
+            use_rag=None,
+        )
+
+        self.assertEqual([], service.ollama.answer.call_args.args[2])
+
     def test_structured_attachment_uses_analysis_and_can_combine_with_rag(self):
         attachment = {
             "filename": "signals.csv",
