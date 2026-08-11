@@ -27,6 +27,7 @@ RUN pip install --upgrade pip==25.1.1 \
 COPY app.py ./
 COPY .streamlit ./.streamlit
 COPY rag_assistant ./rag_assistant
+COPY desktop ./desktop
 COPY tests ./tests
 COPY scripts ./scripts
 
