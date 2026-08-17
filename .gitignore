@@ -13,3 +13,5 @@ tests/fixtures/report_expected.json
 .venv/
 .idea/
 .vscode/
+desktop/dist/
+desktop/staging/

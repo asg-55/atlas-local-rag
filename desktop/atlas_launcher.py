@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -23,7 +24,8 @@ class DesktopLayout:
     state_dir: Path
     app_file: Path
     python_exe: Path
-    llama_server_exe: Path
+    llama_cpu_exe: Path
+    llama_vulkan_exe: Path
     chat_model: Path
 
     @property
@@ -63,20 +65,31 @@ class DesktopLayout:
             state_dir=state_dir,
             app_file=app_file,
             python_exe=(python_exe or install_dir / "runtime" / "python" / "python.exe").resolve(),
-            llama_server_exe=(
+            llama_cpu_exe=(
                 llama_server_exe
-                or install_dir / "runtime" / "llama" / "llama-server.exe"
+                or install_dir / "runtime" / "llama" / "cpu" / "llama-server.exe"
+            ).resolve(),
+            llama_vulkan_exe=(
+                install_dir / "runtime" / "llama" / "vulkan" / "llama-server.exe"
             ).resolve(),
             chat_model=(chat_model or state_dir / "models" / "chat.gguf").resolve(),
         )
+
+    @property
+    def llama_server_exe(self) -> Path:
+        """Compatibility alias for code that explicitly requests CPU mode."""
+        return self.llama_cpu_exe
 
     def required_files(self) -> dict[str, Path]:
         return {
             "application": self.app_file,
             "python_runtime": self.python_exe,
-            "llama_server": self.llama_server_exe,
+            "llama_server_cpu": self.llama_cpu_exe,
             "chat_model": self.chat_model,
         }
+
+    def optional_files(self) -> dict[str, Path]:
+        return {"llama_server_vulkan": self.llama_vulkan_exe}
 
     def missing_files(self) -> dict[str, Path]:
         return {
@@ -96,13 +109,16 @@ def free_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def runtime_environment(layout: DesktopLayout, llama_port: int) -> dict[str, str]:
+def runtime_environment(
+    layout: DesktopLayout, llama_port: int, api_key: str = ""
+) -> dict[str, str]:
     environment = os.environ.copy()
     environment.update(
         {
             "DATA_DIR": str(layout.data_dir),
             "LLM_BACKEND": "llama_cpp",
             "LLAMA_BASE_URL": f"http://{LOOPBACK}:{llama_port}",
+            "LLAMA_API_KEY": api_key,
             "CHAT_MODEL": layout.chat_model.stem,
             "HF_HOME": str(layout.models_dir / "huggingface"),
             "EASYOCR_MODULE_PATH": str(layout.models_dir / "easyocr"),
@@ -121,9 +137,12 @@ def llama_command(
     port: int,
     context_size: int,
     threads: int,
+    backend: str = "cpu",
+    api_key: str = "",
 ) -> list[str]:
-    return [
-        str(layout.llama_server_exe),
+    executable = layout.llama_vulkan_exe if backend == "vulkan" else layout.llama_cpu_exe
+    command = [
+        str(executable),
         "--model",
         str(layout.chat_model),
         "--host",
@@ -134,7 +153,21 @@ def llama_command(
         str(context_size),
         "--threads",
         str(max(1, threads)),
+        "--n-gpu-layers",
+        "all" if backend == "vulkan" else "0",
+        "--no-webui",
     ]
+    if api_key:
+        command.extend(["--api-key", api_key])
+    return command
+
+
+def backend_candidates(layout: DesktopLayout, gpu_mode: str) -> list[str]:
+    if gpu_mode == "off":
+        return ["cpu"]
+    if gpu_mode == "vulkan":
+        return ["vulkan", "cpu"]
+    return (["vulkan"] if layout.llama_vulkan_exe.is_file() else []) + ["cpu"]
 
 
 def streamlit_command(layout: DesktopLayout, port: int) -> list[str]:
@@ -153,14 +186,20 @@ def streamlit_command(layout: DesktopLayout, port: int) -> list[str]:
     ]
 
 
-def wait_for_health(url: str, process: subprocess.Popen, timeout: float) -> None:
+def wait_for_health(
+    url: str,
+    process: subprocess.Popen,
+    timeout: float,
+    headers: dict[str, str] | None = None,
+) -> None:
     deadline = time.monotonic() + timeout
     last_error = "сервис еще не готов"
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError(f"Процесс завершился с кодом {process.returncode}: {url}")
         try:
-            with urllib.request.urlopen(url, timeout=2) as response:
+            request = urllib.request.Request(url, headers=headers or {})
+            with urllib.request.urlopen(request, timeout=2) as response:
                 if 200 <= response.status < 300:
                     return
                 last_error = f"HTTP {response.status}"
@@ -192,12 +231,18 @@ def check_payload(layout: DesktopLayout) -> dict:
             name: {"path": str(path), "present": name not in missing}
             for name, path in layout.required_files().items()
         },
+        "optional_components": {
+            name: {"path": str(path), "present": path.is_file()}
+            for name, path in layout.optional_files().items()
+        },
         "offline_after_install": True,
         "bind_address": LOOPBACK,
     }
 
 
-def run(layout: DesktopLayout, no_browser: bool, context_size: int) -> int:
+def run(
+    layout: DesktopLayout, no_browser: bool, context_size: int, gpu_mode: str
+) -> int:
     missing = layout.missing_files()
     if missing:
         details = "\n".join(f"- {name}: {path}" for name, path in missing.items())
@@ -207,7 +252,8 @@ def run(layout: DesktopLayout, no_browser: bool, context_size: int) -> int:
     llama_port = free_local_port()
     app_port = free_local_port()
     threads = max(1, (os.cpu_count() or 2) - 1)
-    environment = runtime_environment(layout, llama_port)
+    api_key = secrets.token_urlsafe(32)
+    environment = runtime_environment(layout, llama_port, api_key)
     creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     llama_process = None
     app_process = None
@@ -218,17 +264,43 @@ def run(layout: DesktopLayout, no_browser: bool, context_size: int) -> int:
         with llama_log.open("a", encoding="utf-8") as llama_output, app_log.open(
             "a", encoding="utf-8"
         ) as app_output:
-            llama_process = subprocess.Popen(
-                llama_command(layout, llama_port, context_size, threads),
-                cwd=layout.install_dir,
-                env=environment,
-                stdout=llama_output,
-                stderr=subprocess.STDOUT,
-                creationflags=creation_flags,
-            )
-            wait_for_health(
-                f"http://{LOOPBACK}:{llama_port}/health", llama_process, timeout=120
-            )
+            attempts = backend_candidates(layout, gpu_mode)
+            last_error: Exception | None = None
+            for backend in attempts:
+                executable = (
+                    layout.llama_vulkan_exe if backend == "vulkan" else layout.llama_cpu_exe
+                )
+                if not executable.is_file():
+                    last_error = FileNotFoundError(executable)
+                    continue
+                llama_output.write(f"\nAtlas launcher: запуск backend={backend}\n")
+                llama_output.flush()
+                llama_process = subprocess.Popen(
+                    llama_command(
+                        layout, llama_port, context_size, threads, backend, api_key
+                    ),
+                    cwd=executable.parent,
+                    env=environment,
+                    stdout=llama_output,
+                    stderr=subprocess.STDOUT,
+                    creationflags=creation_flags,
+                )
+                try:
+                    wait_for_health(
+                        f"http://{LOOPBACK}:{llama_port}/health",
+                        llama_process,
+                        timeout=120 if backend == "cpu" else 45,
+                        headers={"Authorization": f"Bearer {api_key}"},
+                    )
+                    break
+                except (RuntimeError, TimeoutError) as exc:
+                    last_error = exc
+                    stop_process(llama_process)
+                    llama_process = None
+                    llama_output.write(f"Atlas launcher: backend={backend} недоступен: {exc}\n")
+                    llama_output.flush()
+            else:
+                raise RuntimeError(f"Не удалось запустить llama-server: {last_error}")
             app_process = subprocess.Popen(
                 streamlit_command(layout, app_port),
                 cwd=layout.app_file.parent,
@@ -261,7 +333,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--python", dest="python_exe", type=Path)
     parser.add_argument("--llama-server", dest="llama_server_exe", type=Path)
     parser.add_argument("--model", dest="chat_model", type=Path)
-    parser.add_argument("--context-size", type=int, default=16384)
+    parser.add_argument("--context-size", type=int, default=8192)
+    parser.add_argument("--gpu", choices=("auto", "off", "vulkan"), default="auto")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
     return parser.parse_args(argv)
@@ -281,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0 if payload["ready"] else 2
     try:
-        return run(layout, args.no_browser, args.context_size)
+        return run(layout, args.no_browser, args.context_size, args.gpu)
     except (FileNotFoundError, RuntimeError, TimeoutError) as exc:
         print(f"Atlas не запущен: {exc}", file=sys.stderr)
         return 1

@@ -48,6 +48,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: test
           load: true
           tags: atlas-ci:test
           cache-from: type=gha
@@ -61,8 +62,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: runtime
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-

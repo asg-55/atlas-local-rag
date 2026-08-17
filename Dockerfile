@@ -1,4 +1,4 @@
-FROM python:3.11-slim-bookworm
+FROM python:3.11-slim-bookworm AS atlas-runtime-base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -27,8 +27,6 @@ RUN pip install --upgrade pip==25.1.1 \
 COPY app.py ./
 COPY .streamlit ./.streamlit
 COPY rag_assistant ./rag_assistant
-COPY desktop ./desktop
-COPY tests ./tests
 COPY scripts ./scripts
 
 RUN mkdir -p /app/data /models/huggingface /models/easyocr
@@ -39,3 +37,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl --fail http://localhost:8501/_stcore/health || exit 1
 
 CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--server.maxUploadSize=500", "--server.enableXsrfProtection=true", "--browser.gatherUsageStats=false"]
+
+# CI-only target. Desktop sources and tests are deliberately absent from the
+# Docker image that users run and that the workflow publishes.
+FROM atlas-runtime-base AS test
+
+COPY desktop ./desktop
+COPY tests ./tests
+
+FROM atlas-runtime-base AS runtime

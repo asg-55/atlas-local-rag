@@ -9,3 +9,5 @@ faiss_index
 .env
 README.txt
 *.bat
+desktop/dist
+desktop/staging

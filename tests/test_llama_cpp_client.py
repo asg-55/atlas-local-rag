@@ -30,6 +30,7 @@ class LlamaCppClientTests(unittest.TestCase):
         self.assertEqual(32768, client.context_length())
 
     @patch("rag_assistant.llama_cpp_client.requests.post")
+    @patch.dict("os.environ", {"LLAMA_API_KEY": "desktop-secret"})
     def test_generates_with_openai_compatible_endpoint(self, post):
         response = Mock()
         response.json.return_value = {
@@ -50,6 +51,10 @@ class LlamaCppClientTests(unittest.TestCase):
         self.assertEqual(512, payload["max_tokens"])
         self.assertTrue(payload["chat_template_kwargs"]["enable_thinking"])
         self.assertEqual({"type": "json_object"}, payload["response_format"])
+        self.assertEqual(
+            {"Authorization": "Bearer desktop-secret"},
+            post.call_args.kwargs["headers"],
+        )
 
     @patch("rag_assistant.llama_cpp_client.requests.post")
     def test_empty_answer_is_reported(self, post):

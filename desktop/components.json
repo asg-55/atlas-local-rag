@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "desktop_edition": "prototype-1",
+  "defaults": {
+    "model_component": "qwen35_4b_q4km",
+    "context_size": 8192,
+    "gpu_backend": "vulkan",
+    "cpu_backend": "cpu"
+  },
+  "components": [
+    {
+      "id": "llama_cpu",
+      "kind": "zip",
+      "version": "b10456",
+      "filename": "llama-b10456-bin-win-cpu-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10456/llama-b10456-bin-win-cpu-x64.zip",
+      "sha256": "52ea16a7c5de7230638fbd2e90a4f78185f6c47d06d65a328e3522823fbf2a2d",
+      "size": 18464144,
+      "destination": "runtime/llama/cpu"
+    },
+    {
+      "id": "llama_vulkan",
+      "kind": "zip",
+      "version": "b10456",
+      "filename": "llama-b10456-bin-win-vulkan-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10456/llama-b10456-bin-win-vulkan-x64.zip",
+      "sha256": "60f3d31cc7c2fe62de8f34f8d75ffd06655b4de83bcc5aa6f08df56be42ebb91",
+      "size": 34807256,
+      "destination": "runtime/llama/vulkan"
+    },
+    {
+      "id": "qwen35_4b_q4km",
+      "kind": "file",
+      "version": "e87f176479d0855a907a41277aca2f8ee7a09523",
+      "filename": "Qwen3.5-4B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf?download=true",
+      "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+      "size": 2740937888,
+      "destination": "models/chat.gguf",
+      "license": "Apache-2.0",
+      "source": "unsloth/Qwen3.5-4B-GGUF"
+    }
+  ]
+}

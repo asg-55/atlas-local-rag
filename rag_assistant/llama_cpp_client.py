@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import requests
 
 from .ollama_client import OllamaClient
@@ -8,8 +10,15 @@ from .ollama_client import OllamaClient
 class LlamaCppClient(OllamaClient):
     """llama-server transport with the existing Atlas prompt workflow."""
 
+    def __init__(self, base_url: str, model: str, timeout: int = 300):
+        super().__init__(base_url, model, timeout)
+        api_key = os.getenv("LLAMA_API_KEY", "").strip()
+        self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
     def models(self) -> list[str]:
-        response = requests.get(f"{self.base_url}/v1/models", timeout=5)
+        response = requests.get(
+            f"{self.base_url}/v1/models", timeout=5, headers=self._headers
+        )
         response.raise_for_status()
         names = [
             item.get("id")
@@ -28,7 +37,9 @@ class LlamaCppClient(OllamaClient):
         if selected in self._context_lengths:
             return self._context_lengths[selected]
         try:
-            response = requests.get(f"{self.base_url}/props", timeout=5)
+            response = requests.get(
+                f"{self.base_url}/props", timeout=5, headers=self._headers
+            )
             response.raise_for_status()
             payload = response.json()
             defaults = payload.get("default_generation_settings") or {}
@@ -40,7 +51,9 @@ class LlamaCppClient(OllamaClient):
 
     def health(self, model: str | None = None) -> tuple[bool, str]:
         try:
-            response = requests.get(f"{self.base_url}/health", timeout=5)
+            response = requests.get(
+                f"{self.base_url}/health", timeout=5, headers=self._headers
+            )
             response.raise_for_status()
             return True, "Встроенная модель подключена"
         except requests.RequestException as exc:
@@ -72,6 +85,7 @@ class LlamaCppClient(OllamaClient):
             f"{self.base_url}/v1/chat/completions",
             json=payload,
             timeout=self.timeout,
+            headers=self._headers,
         )
         response.raise_for_status()
         data = response.json()
