@@ -205,8 +205,34 @@ staging, проверяет целостность и безопасно рас�
 запуск. Финальный Docker target не содержит `desktop/` и `tests/`; они входят
 только в отдельный CI test-target.
 
-Это еще не установщик. Проверенные GGUF и llama.cpp находятся только в
-исключённом из Git локальном staging. Прототип пока не включает упакованный
-Python runtime, Windows wheels, LibreOffice, FFmpeg и ML-кэши. Следующий
-критерий — собрать их в воспроизводимый Windows one-folder каталог, добавить
-Windows Job Object и измерить пиковую RAM на целевой машине.
+Следующий технический прототип собрал официальный Windows embeddable Python
+3.11.9. Desktop использует отдельный direct-requirements файл и lock из 83
+конкретных Windows wheels; все URL и SHA-256 зафиксированы. Builder загружает
+wheelhouse с повторными попытками, проверяет каждый SHA-256, устанавливает его с
+`--no-index --only-binary=:all:` и удаляет build-only pip из результата.
+
+Фактический распакованный Python runtime без pip занимает 2 553 169 007 байт,
+wheelhouse — 540 761 719 байт. На Windows подтверждены SQLite 3.45.1 с FTS5,
+FAISS 1.11.0, PyTorch/torchvision CPU, Sentence Transformers, EasyOCR,
+faster-whisper, OpenCV, CTranslate2, Streamlit, Office/PDF-парсеры и
+cryptography. Полный запуск из staging успешно поднял Vulkan llama-server и
+Streamlit с health `ok`.
+
+Idle-замер полного supervisor с Vulkan показал 3 039 686 656 байт working set и
+4 113 227 776 байт private bytes; почти весь объём принадлежит llama-server.
+Поскольку Desktop однопользовательский, `--parallel 1` заменяет четыре
+стандартных слота одним и сохраняет контекст 8192. В отдельном замере private
+bytes llama-server снизились примерно с 4,05 до 3,82 ГБ; working set почти не
+изменился. `--no-host` выигрыша не дал. Следовательно, 8 ГБ RAM остаются
+ограниченным профилем и требуют последовательной выгрузки LLM перед тяжёлым
+OCR/RAG, а не только GPU-offload.
+
+Launcher теперь назначает дочерние процессы в Windows Job Object с
+`KILL_ON_JOB_CLOSE`. Жёсткая проверка подтвердила: после принудительного
+завершения родителя число оставшихся дочерних процессов равно нулю.
+
+Это еще не установщик. Проверенные GGUF, llama.cpp и Python runtime находятся
+только в исключённом из Git локальном staging. Прототип пока не включает
+LibreOffice, FFmpeg и готовые ML/OCR/Whisper-кэши. Следующий критерий — добавить
+их в воспроизводимый one-folder каталог, добавить защиту от двойного запуска и
+измерить пиковую RAM на целевой машине при реальной RAG/OCR-нагрузке.

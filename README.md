@@ -86,7 +86,8 @@ Office/EML/CSV/TXT/JSON/MD -> проверка найденных данных -
 Проектирование отдельной сборки без Docker и Ollama описано в
 [`docs/windows-portable-audit.md`](docs/windows-portable-audit.md). В
 [`desktop/`](desktop/) находятся локальный супервизор и закреплённый manifest
-Qwen3.5-4B Q4_K_M, CPU/Vulkan-пакетов llama.cpp. Это отдельный контур сборки:
+Qwen3.5-4B Q4_K_M, CPU/Vulkan-пакетов llama.cpp, официальный embeddable Python
+и lock Windows wheels. Это отдельный контур сборки:
 его runtime, staging и модель не включаются в Docker-образ, а Docker Compose
 по-прежнему использует Ollama и каталоги `data/`, `model_cache/` проекта.
 Прототип ещё не является готовым установщиком.

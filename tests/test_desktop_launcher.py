@@ -7,6 +7,7 @@ from unittest.mock import patch
 from desktop.atlas_launcher import (
     DesktopLayout,
     LOOPBACK,
+    WindowsProcessJob,
     backend_candidates,
     check_payload,
     llama_command,
@@ -16,6 +17,14 @@ from desktop.atlas_launcher import (
 
 
 class DesktopLauncherTests(unittest.TestCase):
+    def test_process_job_is_a_safe_noop_outside_windows(self):
+        if os.name == "nt":
+            self.skipTest("Non-Windows behavior only")
+        job = WindowsProcessJob()
+        self.assertFalse(job.enabled)
+        job.assign(object())
+        job.close()
+
     def test_layout_separates_application_and_user_data(self):
         with tempfile.TemporaryDirectory() as install, tempfile.TemporaryDirectory() as local:
             install_dir = Path(install)
@@ -28,6 +37,17 @@ class DesktopLauncherTests(unittest.TestCase):
             self.assertEqual(layout.state_dir / "data", layout.data_dir)
             self.assertNotEqual(layout.install_dir, layout.state_dir)
 
+    def test_portable_bundle_model_is_used_without_copying_to_user_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundled = root / "models" / "chat.gguf"
+            bundled.parent.mkdir()
+            bundled.touch()
+            layout = DesktopLayout.resolve(root, root / "state")
+
+            self.assertEqual(bundled.resolve(), layout.chat_model)
+            self.assertFalse((layout.state_dir / "models" / "chat.gguf").exists())
+
     def test_runtime_is_offline_and_uses_llama_cpp(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -39,6 +59,8 @@ class DesktopLauncherTests(unittest.TestCase):
             self.assertEqual("1", environment["TRANSFORMERS_OFFLINE"])
             self.assertEqual("1", environment["HF_HUB_OFFLINE"])
             self.assertEqual(str(layout.data_dir), environment["DATA_DIR"])
+            self.assertEqual("1", environment["PYTHONNOUSERSITE"])
+            self.assertEqual("1", environment["PYTHONDONTWRITEBYTECODE"])
 
     def test_commands_bind_only_to_loopback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -52,6 +74,7 @@ class DesktopLauncherTests(unittest.TestCase):
             self.assertIn(f"--server.address={LOOPBACK}", streamlit)
             self.assertNotIn("0.0.0.0", llama + streamlit)
             self.assertEqual("0", llama[llama.index("--n-gpu-layers") + 1])
+            self.assertEqual("1", llama[llama.index("--parallel") + 1])
             self.assertEqual("secret", llama[llama.index("--api-key") + 1])
             self.assertIn("--no-webui", llama)
 

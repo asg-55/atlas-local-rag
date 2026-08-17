@@ -41,22 +41,28 @@ backend. Затем запускается Streamlit и проверяется `
 
 [`components.json`](components.json) фиксирует версии, URL, размер и SHA-256:
 
+- официальный Windows embeddable Python 3.11.9;
+- build-only pip 26.2.1, удаляемый из готового runtime;
 - Qwen3.5-4B Q4_K_M, 2 740 937 888 байт, контекст Atlas 8192;
 - llama.cpp `b10456` Windows x64 CPU — обязательный backend;
 - llama.cpp `b10456` Windows x64 Vulkan — опциональный GPU backend для NVIDIA,
   AMD и Intel при наличии рабочего Vulkan-драйвера.
 
-Компоненты готовятся только в исключённый из Git staging-каталог. Например,
-из уже собранного CI target:
+Python-зависимости Desktop отделены от Docker-зависимостей. Прямые версии
+перечислены в `requirements-windows.in`, а `requirements-windows.lock.json`
+фиксирует 83 конкретных Windows wheel с URL и SHA-256. Builder допускает только
+бинарные wheels, сначала создаёт проверенный возобновляемый wheelhouse, затем
+устанавливает зависимости полностью офлайн и удаляет pip.
+
+Полная подготовка Python backend выполняется в исключённый из Git staging:
 
 ```powershell
-docker build --target test -t atlas-ci:desktop .
-docker run --rm -v "${PWD}:/src" -w /src atlas-ci:desktop `
-  python desktop/prepare_runtime.py --destination model_cache/desktop
+./desktop/build_python_runtime.ps1 -Destination model_cache/desktop
 ```
 
-Загрузчик повторно использует только файл с правильными размером и SHA-256,
-проверяет архив до распаковки и запрещает выход файлов за staging-каталог.
+LLM-компоненты можно подготовить отдельно через `prepare_runtime.py`. Загрузчики
+повторно используют только файлы с правильными размером и SHA-256, проверяют
+архивы до распаковки и запрещают выход файлов за staging-каталог.
 
 ## Фактически проверено
 
@@ -66,8 +72,27 @@ Vulkan. Отдельно обнаружено, что GGUF blob из Ollama не
 upstream llama.cpp по metadata RoPE, поэтому Desktop никогда не переиспользует
 Ollama blob и поставляет собственный проверенный model pack.
 
-До пилотной поставки всё ещё нужны упакованный Python и Windows wheels,
-ML/OCR-кэши, LibreOffice/FFmpeg, Windows Job Object, защита от двойного запуска,
-ротация технических логов и подписанный установочный manifest. На машине лишь с
+Собран и проверен официальный embeddable Python 3.11.9 с Windows wheels.
+Распакованный runtime без pip занимает 2 553 169 007 байт; сжатый wheelhouse —
+540 761 719 байт. Нативная проверка подтвердила Python 3.11.9, SQLite
+3.45.1/FTS5, FAISS, PyTorch/torchvision CPU, Sentence Transformers, EasyOCR,
+faster-whisper, OpenCV, CTranslate2, Streamlit, Office/PDF и cryptography.
+Полный supervisor успешно поднял Vulkan llama-server и упакованный Streamlit,
+после чего `/_stcore/health` вернул `ok`.
+
+Idle-замер полного supervisor с Vulkan составил около 3,04 ГБ working set и
+4,11 ГБ private bytes на тестовой Windows-машине; основной потребитель —
+llama-server. Для однопользовательского Desktop число параллельных слотов
+снижено с четырёх до одного: контекст 8192 сохраняется, private bytes
+llama-server уменьшились примерно с 4,05 до 3,82 ГБ. `--no-host` измеримого
+выигрыша не дал и не используется.
+
+Launcher использует Windows Job Object с `KILL_ON_JOB_CLOSE`; жёсткий тест
+подтвердил, что принудительное завершение родителя автоматически закрывает всё
+дерево llama-server/Streamlit.
+
+До пилотной поставки всё ещё нужны ML/OCR/Whisper-кэши, LibreOffice/FFmpeg,
+защита от двойного запуска, ротация технических логов и подписанный
+установочный manifest. На машине лишь с
 8 ГБ ОЗУ пока нельзя обещать одновременную CPU-работу LLM, PyTorch RAG и OCR без
 выгрузки неиспользуемых компонентов; это следующий обязательный memory-тест.
