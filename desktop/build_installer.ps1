@@ -19,7 +19,9 @@ if ($Version -notmatch '^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$') {
 
 $requiredFiles = @(
     "app\app.py",
+    "desktop-build.json",
     "desktop\atlas_launcher.py",
+    "payload-manifest.json",
     "runtime\python\python.exe",
     "runtime\python\pythonw.exe",
     "runtime\llama\cpu\llama-server.exe",
@@ -37,6 +39,14 @@ $launcher = Join-Path $sourceRoot "desktop\atlas_launcher.py"
 & $pythonExe $launcher --check --install-dir $sourceRoot
 if ($LASTEXITCODE -ne 0) {
     throw "Desktop launcher отклонил установочный payload"
+}
+
+& $pythonExe (Join-Path $PSScriptRoot "payload_manifest.py") `
+    --verify `
+    --root $sourceRoot `
+    --manifest (Join-Path $sourceRoot "payload-manifest.json")
+if ($LASTEXITCODE -ne 0) {
+    throw "SHA-256 manifest установочного payload не прошёл проверку"
 }
 
 Write-Host "Payload Atlas Desktop прошёл проверку: $sourceRoot"
@@ -65,6 +75,10 @@ if (-not $CompilerPath) {
 }
 if (-not $CompilerPath -or -not (Test-Path -LiteralPath $CompilerPath -PathType Leaf)) {
     throw "ISCC.exe (Inno Setup 7) не найден. Установите compiler или передайте -CompilerPath."
+}
+$compilerBanner = (& $CompilerPath /? 2>&1 | Select-Object -First 1)
+if ($compilerBanner -notmatch '^Inno Setup 7 Command-Line Compiler$') {
+    throw "Требуется Inno Setup 7, обнаружено: $compilerBanner"
 }
 
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null

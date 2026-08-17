@@ -144,29 +144,41 @@ RAG/OCR; после медиа-разбора и операций embeddings/rer
 Docker, Ollama и системный Python не нужны. Изменяемые данные остаются в
 `%LOCALAPPDATA%\Atlas` и намеренно не входят в правила удаления.
 
-Сухая проверка готового staging:
+Сначала из проверенного build-cache создаётся чистый payload. Скрипт требует
+чистое рабочее дерево, записывает commit исходников и не переносит `downloads`,
+`validation`, `data`, `.env` или рабочие документы:
+
+```powershell
+./desktop/prepare_installer_payload.ps1 `
+  -BasePayload model_cache/desktop `
+  -Destination desktop/staging/Atlas
+```
+
+В корне payload создаётся `payload-manifest.json` с относительным путём,
+размером и SHA-256 каждого файла. Builder проверяет полный manifest перед сухой
+проверкой и перед компиляцией:
 
 ```powershell
 ./desktop/build_installer.ps1 `
-  -SourceDirectory model_cache/desktop `
+  -SourceDirectory desktop/staging/Atlas `
   -Version 0.1.0 `
   -ValidateOnly
 ```
 
-Сборка после установки Inno Setup 7:
+Сборка с закреплённым Inno Setup 7.0.2 x64:
 
 ```powershell
 ./desktop/build_installer.ps1 `
-  -SourceDirectory model_cache/desktop `
+  -SourceDirectory desktop/staging/Atlas `
   -Version 0.1.0
 ```
 
 Так как payload больше 4,2 ГБ, результат является одним установочным комплектом:
 небольшой `.exe`, пронумерованные блоки `.bin` не более 2 ГБ и
 `SHA256SUMS.txt`. Каталоги build-cache `downloads` и `validation` не включаются.
-Отсутствие локального `ISCC.exe` не мешает проверять payload, но фактическая
-компиляция на этой машине пока не выполнялась. Для публичной поставки ещё нужны
-Authenticode-подпись EXE и подписанный release manifest.
+Версия, официальный URL, размер и SHA-256 установщика compiler закреплены в
+[`installer-tools.json`](installer-tools.json). Для публичной поставки ещё нужны
+Authenticode-подпись EXE и внешняя подпись release manifest.
 
 Искусственная симуляция 8 ГБ ОЗУ исключена: она не доказывает работу при реальном
 давлении памяти. Сейчас диагностика и запуск проверены на машине с 32 ГБ ОЗУ.
