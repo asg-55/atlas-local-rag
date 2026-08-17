@@ -76,9 +76,9 @@ if (-not $CompilerPath) {
 if (-not $CompilerPath -or -not (Test-Path -LiteralPath $CompilerPath -PathType Leaf)) {
     throw "ISCC.exe (Inno Setup 7) не найден. Установите compiler или передайте -CompilerPath."
 }
-$compilerBanner = (& $CompilerPath /? 2>&1 | Select-Object -First 1)
-if ($compilerBanner -notmatch '^Inno Setup 7 Command-Line Compiler$') {
-    throw "Требуется Inno Setup 7, обнаружено: $compilerBanner"
+$compilerOutput = @(& $CompilerPath /? 2>&1)
+if (-not ($compilerOutput -match '^Inno Setup 7 Command-Line Compiler$')) {
+    throw "Обнаруженный ISCC.exe не является Inno Setup 7"
 }
 
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
