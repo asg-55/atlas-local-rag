@@ -9,7 +9,12 @@ from rank_bm25 import BM25Okapi
 
 from .config import Settings
 from .database import Database
-from .embeddings import cross_encoder, embed_query
+from .embeddings import (
+    cross_encoder,
+    embed_query,
+    low_memory_mode,
+    release_embedding_models,
+)
 from .models import SearchResult
 from .vector_index import VectorIndex
 
@@ -177,8 +182,17 @@ class HybridRetriever:
                 )
             )
         if self.settings.enable_reranker and candidates:
-            model = cross_encoder(self.settings.reranker_model)
-            logits = model.predict([(query, result.chunk.content) for result in candidates], show_progress_bar=False)
+            model = None
+            try:
+                model = cross_encoder(self.settings.reranker_model)
+                logits = model.predict(
+                    [(query, result.chunk.content) for result in candidates],
+                    show_progress_bar=False,
+                )
+            finally:
+                if low_memory_mode():
+                    del model
+                    release_embedding_models()
             max_fused = max(result.score for result in candidates) or 1.0
             for result, logit in zip(candidates, logits):
                 rerank = 1.0 / (1.0 + math.exp(-float(np.clip(logit, -30, 30))))

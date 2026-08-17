@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from desktop.prepare_runtime import (
     DEFAULT_MANIFEST,
@@ -13,6 +14,7 @@ from desktop.prepare_runtime import (
     verify_download,
 )
 from desktop.generate_windows_lock import build_lock
+from desktop.prepare_offline_models import prepare_models, safe_target
 
 
 class DesktopRuntimeTests(unittest.TestCase):
@@ -26,6 +28,9 @@ class DesktopRuntimeTests(unittest.TestCase):
             {
                 "python_embed",
                 "pip_bootstrap",
+                "libreoffice_windows",
+                "easyocr_detector",
+                "easyocr_cyrillic",
                 "llama_cpu",
                 "llama_vulkan",
                 "qwen35_4b_q4km",
@@ -36,6 +41,8 @@ class DesktopRuntimeTests(unittest.TestCase):
         self.assertEqual("Apache-2.0", components["qwen35_4b_q4km"]["license"])
         self.assertEqual("3.11.9", components["python_embed"]["version"])
         self.assertTrue(components["pip_bootstrap"]["build_only"])
+        self.assertEqual("f15ba07bfcb0186986cf3171063506f5d207c11f8cc051ba0d135209e9e915f9", components["libreoffice_windows"]["sha256"])
+        self.assertEqual("2f8227d2def4037cdb3b34389dcf9ec1", components["easyocr_detector"]["extracted_md5"])
 
     def test_verify_download_checks_size_and_sha256(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -141,6 +148,65 @@ class DesktopRuntimeTests(unittest.TestCase):
         self.assertIn("--no-index", builder)
         self.assertIn("Get-FileHash -Algorithm SHA256", builder)
         self.assertIn("pip_in_runtime", builder)
+
+    def test_model_pack_manifest_pins_revisions_and_only_required_files(self):
+        path = DEFAULT_MANIFEST.with_name("model-packs.json")
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        models = {item["id"]: item for item in manifest["models"]}
+
+        self.assertEqual({"embedding", "reranker", "whisper-small"}, set(models))
+        self.assertTrue(all(len(item["revision"]) == 40 for item in models.values()))
+        self.assertTrue(all("*" not in pattern for item in models.values() for pattern in item["allow_patterns"]))
+        self.assertIn("model.safetensors", models["embedding"]["allow_patterns"])
+        self.assertNotIn("pytorch_model.bin", models["embedding"]["allow_patterns"])
+
+    def test_offline_asset_builder_uses_verified_archives_and_msi_extraction(self):
+        builder = DEFAULT_MANIFEST.with_name("build_offline_assets.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("Get-FileHash -Algorithm SHA256", builder)
+        self.assertIn("Get-FileHash -Algorithm MD5", builder)
+        self.assertIn("msiexec.exe /a", builder)
+        self.assertIn("prepare_offline_models.py", builder)
+        self.assertIn("ffmpeg_cli_required = $false", builder)
+        self.assertIn("--continue-at -", builder)
+
+    def test_model_pack_preparation_copies_only_declared_snapshot_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            snapshot = root / "snapshot"
+            snapshot.mkdir()
+            (snapshot / "model.safetensors").write_bytes(b"weights")
+            manifest = root / "models.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "models": [
+                            {
+                                "id": "embedding",
+                                "repository": "example/model",
+                                "revision": "a" * 40,
+                                "destination": "embedding",
+                                "allow_patterns": ["model.safetensors"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch("desktop.prepare_offline_models.download_snapshot", return_value=snapshot):
+                result = prepare_models(manifest, root / "output", root / "cache")
+
+            installed = root / "output" / "embedding" / "model.safetensors"
+            self.assertEqual(b"weights", installed.read_bytes())
+            self.assertEqual(7, result["models"][0]["bytes"])
+
+    def test_model_pack_destination_cannot_escape_staging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                safe_target(Path(directory), "../outside")
 
 
 if __name__ == "__main__":

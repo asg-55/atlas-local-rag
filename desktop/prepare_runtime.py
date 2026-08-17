@@ -30,7 +30,7 @@ def load_manifest(path: Path) -> dict:
         if component_id in seen:
             raise ValueError(f"Повторяющийся id компонента: {component_id}")
         seen.add(component_id)
-        if component["kind"] not in {"file", "zip"}:
+        if component["kind"] not in {"file", "zip", "msi"}:
             raise ValueError(f"Неизвестный тип компонента: {component['kind']}")
         if len(component["sha256"]) != 64:
             raise ValueError(f"Некорректный SHA-256: {component_id}")
@@ -94,6 +94,8 @@ def install_component(component: dict, archive: Path, destination_root: Path) ->
     root = destination_root.resolve()
     if destination != root and root not in destination.parents:
         raise ValueError(f"Destination вне staging: {component['destination']}")
+    if component["kind"] == "msi":
+        raise ValueError("MSI-компонент устанавливает desktop/build_offline_assets.ps1")
     if component["kind"] == "zip":
         safe_extract(archive, destination)
     else:
@@ -119,7 +121,11 @@ def main(argv: list[str] | None = None) -> int:
         for component in available.values():
             print(f"{component['id']}: {component['filename']} ({component['size']} bytes)")
         return 0
-    selected = args.components or list(available)
+    selected = args.components or [
+        component_id
+        for component_id, component in available.items()
+        if component["kind"] != "msi"
+    ]
     unknown = sorted(set(selected).difference(available))
     if unknown:
         print(f"Неизвестные компоненты: {', '.join(unknown)}", file=sys.stderr)

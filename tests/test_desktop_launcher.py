@@ -61,6 +61,12 @@ class DesktopLauncherTests(unittest.TestCase):
             self.assertEqual(str(layout.data_dir), environment["DATA_DIR"])
             self.assertEqual("1", environment["PYTHONNOUSERSITE"])
             self.assertEqual("1", environment["PYTHONDONTWRITEBYTECODE"])
+            self.assertEqual("1", environment["ATLAS_LOW_MEMORY"])
+            self.assertEqual("0", environment["EASYOCR_DOWNLOAD_ENABLED"])
+            self.assertEqual(str(layout.embedding_model_dir), environment["EMBEDDING_MODEL"])
+            self.assertEqual(str(layout.reranker_model_dir), environment["RERANKER_MODEL"])
+            self.assertEqual(str(layout.whisper_model_dir), environment["WHISPER_MODEL"])
+            self.assertEqual(str(layout.soffice_exe), environment["ATLAS_SOFFICE_PATH"])
 
     def test_commands_bind_only_to_loopback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -75,6 +81,7 @@ class DesktopLauncherTests(unittest.TestCase):
             self.assertNotIn("0.0.0.0", llama + streamlit)
             self.assertEqual("0", llama[llama.index("--n-gpu-layers") + 1])
             self.assertEqual("1", llama[llama.index("--parallel") + 1])
+            self.assertEqual("1", llama[llama.index("--sleep-idle-seconds") + 1])
             self.assertEqual("secret", llama[llama.index("--api-key") + 1])
             self.assertIn("--no-webui", llama)
 
@@ -102,7 +109,18 @@ class DesktopLauncherTests(unittest.TestCase):
             self.assertFalse(payload["ready"])
             self.assertFalse(layout.state_dir.exists())
             self.assertEqual(
-                {"application", "python_runtime", "llama_server_cpu", "chat_model"},
+                {
+                    "application",
+                    "python_runtime",
+                    "llama_server_cpu",
+                    "chat_model",
+                    "embedding_model",
+                    "reranker_model",
+                    "whisper_model",
+                    "easyocr_detector",
+                    "easyocr_recognizer",
+                    "libreoffice",
+                },
                 set(payload["components"]),
             )
             self.assertIn("llama_server_vulkan", payload["optional_components"])

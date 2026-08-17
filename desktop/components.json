@@ -32,6 +32,43 @@
       "license": "MIT"
     },
     {
+      "id": "libreoffice_windows",
+      "kind": "msi",
+      "version": "26.2.5",
+      "filename": "LibreOffice_26.2.5_Win_x86-64.msi",
+      "url": "https://download.documentfoundation.org/libreoffice/stable/26.2.5/win/x86_64/LibreOffice_26.2.5_Win_x86-64.msi",
+      "sha256": "f15ba07bfcb0186986cf3171063506f5d207c11f8cc051ba0d135209e9e915f9",
+      "size": 372948992,
+      "destination": "runtime/libreoffice",
+      "license": "MPL-2.0"
+    },
+    {
+      "id": "easyocr_detector",
+      "kind": "zip",
+      "version": "craft-pre-v1.1.6",
+      "filename": "craft_mlt_25k.zip",
+      "url": "https://github.com/JaidedAI/EasyOCR/releases/download/pre-v1.1.6/craft_mlt_25k.zip",
+      "sha256": "8dc6a1c703a89ed56308ef742d26ebd45c656248cbbbda6e7fe60e569f873e65",
+      "size": 77251756,
+      "destination": "models/easyocr/model",
+      "extracted_file": "craft_mlt_25k.pth",
+      "extracted_md5": "2f8227d2def4037cdb3b34389dcf9ec1",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "easyocr_cyrillic",
+      "kind": "zip",
+      "version": "v1.6.1",
+      "filename": "cyrillic_g2.zip",
+      "url": "https://github.com/JaidedAI/EasyOCR/releases/download/v1.6.1/cyrillic_g2.zip",
+      "sha256": "34060353accfadd4e429f28d392f88cf70c2fc9d2633710a3b00c21412dc627b",
+      "size": 14140353,
+      "destination": "models/easyocr/model",
+      "extracted_file": "cyrillic_g2.pth",
+      "extracted_md5": "19f85f43d9128a89ac21b8d6a06973fe",
+      "license": "Apache-2.0"
+    },
+    {
       "id": "llama_cpu",
       "kind": "zip",
       "version": "b10456",

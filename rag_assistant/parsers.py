@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gc
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -25,14 +27,31 @@ from .config import settings
 def _ocr_reader():
     import easyocr
 
-    return easyocr.Reader(["ru", "en"], gpu=False, verbose=False)
+    download_enabled = os.getenv("EASYOCR_DOWNLOAD_ENABLED", "1").lower() in {
+        "1", "true", "yes", "on"
+    }
+    return easyocr.Reader(
+        ["ru", "en"], gpu=False, verbose=False, download_enabled=download_enabled
+    )
 
 
 @lru_cache(maxsize=1)
 def _whisper_model():
     from faster_whisper import WhisperModel
 
-    return WhisperModel("small", device="cpu", compute_type="int8")
+    model = os.getenv("WHISPER_MODEL", "small")
+    return WhisperModel(
+        model,
+        device="cpu",
+        compute_type="int8",
+        local_files_only=os.getenv("HF_HUB_OFFLINE", "0") == "1",
+    )
+
+
+def release_parser_models() -> None:
+    _ocr_reader.cache_clear()
+    _whisper_model.cache_clear()
+    gc.collect()
 
 
 def _box_metrics(box) -> tuple[float, float, float, float]:
@@ -384,13 +403,27 @@ def parse_docx(path: Path) -> list[TextBlock]:
 
 
 def parse_doc(path: Path) -> list[TextBlock]:
-    executable = shutil.which("soffice") or shutil.which("libreoffice")
+    configured = os.getenv("ATLAS_SOFFICE_PATH")
+    executable = (
+        configured if configured and Path(configured).is_file()
+        else shutil.which("soffice") or shutil.which("libreoffice")
+    )
     if not executable:
         raise RuntimeError("Для чтения .doc требуется LibreOffice, но он не найден")
     with tempfile.TemporaryDirectory(prefix="doc-convert-") as folder:
         output_dir = Path(folder)
+        profile_argument = f"-env:UserInstallation={(output_dir / 'profile').resolve().as_uri()}"
+        common_arguments = [
+            executable,
+            profile_argument,
+            "--headless",
+            "--nologo",
+            "--nodefault",
+            "--nofirststartwizard",
+            "--nolockcheck",
+        ]
         result = subprocess.run(
-            [executable, "--headless", "--convert-to", "docx", "--outdir", str(output_dir), str(path)],
+            common_arguments + ["--convert-to", "docx", "--outdir", str(output_dir), str(path)],
             capture_output=True,
             text=True,
             timeout=180,
@@ -402,7 +435,7 @@ def parse_doc(path: Path) -> list[TextBlock]:
             raise RuntimeError(f"LibreOffice не смог преобразовать .doc: {details}")
         blocks = parse_docx(converted)
         html_result = subprocess.run(
-            [executable, "--headless", "--convert-to", "html", "--outdir", str(output_dir), str(path)],
+            common_arguments + ["--convert-to", "html", "--outdir", str(output_dir), str(path)],
             capture_output=True,
             text=True,
             timeout=180,
@@ -635,22 +668,40 @@ def parse_text(path: Path) -> list[TextBlock]:
 
 def parse_file(path: Path) -> list[TextBlock]:
     extension = path.suffix.lower()
-    if extension == ".pdf":
-        return parse_pdf(path)
-    if extension == ".docx":
-        return parse_docx(path)
-    if extension == ".doc":
-        return parse_doc(path)
-    if extension == ".xlsx":
-        return parse_xlsx(path)
-    if extension in {".jpg", ".jpeg", ".png"}:
-        return parse_image(path)
-    if extension in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}:
-        return parse_audio(path)
-    if extension == ".csv":
-        return parse_csv(path)
-    if extension == ".json":
-        return parse_json(path)
-    if extension in {".txt", ".md"}:
-        return parse_text(path)
-    raise ValueError(f"Формат {extension or '<без расширения>'} не поддерживается")
+    try:
+        if extension == ".pdf":
+            return parse_pdf(path)
+        if extension == ".docx":
+            return parse_docx(path)
+        if extension == ".doc":
+            return parse_doc(path)
+        if extension == ".xlsx":
+            return parse_xlsx(path)
+        if extension in {".jpg", ".jpeg", ".png"}:
+            return parse_image(path)
+        if extension in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}:
+            return parse_audio(path)
+        if extension == ".csv":
+            return parse_csv(path)
+        if extension == ".json":
+            return parse_json(path)
+        if extension in {".txt", ".md"}:
+            return parse_text(path)
+        raise ValueError(f"Формат {extension or '<без расширения>'} не поддерживается")
+    finally:
+        if (
+            os.getenv("ATLAS_LOW_MEMORY", "0").lower() in {"1", "true", "yes", "on"}
+            and extension
+            in {
+                ".pdf",
+                ".jpg",
+                ".jpeg",
+                ".png",
+                ".mp3",
+                ".wav",
+                ".m4a",
+                ".ogg",
+                ".flac",
+            }
+        ):
+            release_parser_models()

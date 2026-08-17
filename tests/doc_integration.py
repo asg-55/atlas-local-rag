@@ -1,5 +1,7 @@
 """Manual legacy .doc conversion smoke test used in Docker verification."""
 
+import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -19,8 +21,24 @@ def main() -> None:
 \trowd\cellx5000\cellx9000 Период ТО\cell 500 часов\cell\row
 }"""
         rtf_path.write_bytes(rtf.encode("cp1251"))
+        executable = os.getenv("ATLAS_SOFFICE_PATH") or shutil.which("soffice")
+        assert executable, "LibreOffice CLI not found"
+        profile = (root / "source-profile").resolve().as_uri()
         result = subprocess.run(
-            ["soffice", "--headless", "--convert-to", "doc", "--outdir", str(root), str(rtf_path)],
+            [
+                executable,
+                f"-env:UserInstallation={profile}",
+                "--headless",
+                "--nologo",
+                "--nodefault",
+                "--nofirststartwizard",
+                "--nolockcheck",
+                "--convert-to",
+                "doc",
+                "--outdir",
+                str(root),
+                str(rtf_path),
+            ],
             capture_output=True,
             text=True,
             timeout=180,

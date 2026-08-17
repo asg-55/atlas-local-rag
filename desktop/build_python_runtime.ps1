@@ -165,7 +165,13 @@ if (Test-Path -LiteralPath $safeBundleDesktopDir) {
     Remove-Item -LiteralPath $safeBundleDesktopDir -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $safeBundleDesktopDir | Out-Null
-foreach ($name in @("__init__.py", "atlas_launcher.py", "components.json", "README.md")) {
+foreach ($name in @(
+    "__init__.py",
+    "atlas_launcher.py",
+    "components.json",
+    "model-packs.json",
+    "README.md"
+)) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $safeBundleDesktopDir -Force
 }
 

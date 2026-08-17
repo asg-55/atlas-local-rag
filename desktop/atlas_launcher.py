@@ -115,6 +115,30 @@ class DesktopLayout:
         return self.state_dir / "models"
 
     @property
+    def bundled_models_dir(self) -> Path:
+        return self.install_dir / "models"
+
+    @property
+    def embedding_model_dir(self) -> Path:
+        return self.bundled_models_dir / "huggingface" / "embedding"
+
+    @property
+    def reranker_model_dir(self) -> Path:
+        return self.bundled_models_dir / "huggingface" / "reranker"
+
+    @property
+    def whisper_model_dir(self) -> Path:
+        return self.bundled_models_dir / "huggingface" / "whisper-small"
+
+    @property
+    def easyocr_dir(self) -> Path:
+        return self.bundled_models_dir / "easyocr"
+
+    @property
+    def soffice_exe(self) -> Path:
+        return self.install_dir / "runtime" / "libreoffice" / "program" / "soffice.com"
+
+    @property
     def logs_dir(self) -> Path:
         return self.state_dir / "logs"
 
@@ -167,6 +191,12 @@ class DesktopLayout:
             "python_runtime": self.python_exe,
             "llama_server_cpu": self.llama_cpu_exe,
             "chat_model": self.chat_model,
+            "embedding_model": self.embedding_model_dir / "model.safetensors",
+            "reranker_model": self.reranker_model_dir / "model.safetensors",
+            "whisper_model": self.whisper_model_dir / "model.bin",
+            "easyocr_detector": self.easyocr_dir / "model" / "craft_mlt_25k.pth",
+            "easyocr_recognizer": self.easyocr_dir / "model" / "cyrillic_g2.pth",
+            "libreoffice": self.soffice_exe,
         }
 
     def optional_files(self) -> dict[str, Path]:
@@ -194,6 +224,7 @@ def runtime_environment(
     layout: DesktopLayout, llama_port: int, api_key: str = ""
 ) -> dict[str, str]:
     environment = os.environ.copy()
+    current_path = environment.get("PATH", "")
     environment.update(
         {
             "DATA_DIR": str(layout.data_dir),
@@ -202,7 +233,13 @@ def runtime_environment(
             "LLAMA_API_KEY": api_key,
             "CHAT_MODEL": layout.chat_model.stem,
             "HF_HOME": str(layout.models_dir / "huggingface"),
-            "EASYOCR_MODULE_PATH": str(layout.models_dir / "easyocr"),
+            "EMBEDDING_MODEL": str(layout.embedding_model_dir),
+            "RERANKER_MODEL": str(layout.reranker_model_dir),
+            "WHISPER_MODEL": str(layout.whisper_model_dir),
+            "EASYOCR_MODULE_PATH": str(layout.easyocr_dir),
+            "EASYOCR_DOWNLOAD_ENABLED": "0",
+            "ATLAS_SOFFICE_PATH": str(layout.soffice_exe),
+            "ATLAS_LOW_MEMORY": "1",
             "TRANSFORMERS_OFFLINE": "1",
             "HF_HUB_OFFLINE": "1",
             "HF_DATASETS_OFFLINE": "1",
@@ -210,6 +247,7 @@ def runtime_environment(
             "PYTHONUTF8": "1",
             "PYTHONNOUSERSITE": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
+            "PATH": str(layout.soffice_exe.parent) + os.pathsep + current_path,
         }
     )
     return environment
@@ -235,6 +273,8 @@ def llama_command(
         "--ctx-size",
         str(context_size),
         "--parallel",
+        "1",
+        "--sleep-idle-seconds",
         "1",
         "--threads",
         str(max(1, threads)),

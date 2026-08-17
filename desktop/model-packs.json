@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "id": "embedding",
+      "repository": "intfloat/multilingual-e5-base",
+      "revision": "d128750597153bb5987e10b1c3493a34e5a4502a",
+      "destination": "embedding",
+      "license": "MIT",
+      "allow_patterns": [
+        "1_Pooling/config.json",
+        "config.json",
+        "model.safetensors",
+        "modules.json",
+        "sentence_bert_config.json",
+        "sentencepiece.bpe.model",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json"
+      ]
+    },
+    {
+      "id": "reranker",
+      "repository": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+      "revision": "1427fd652930e4ba29e8149678df786c240d8825",
+      "destination": "reranker",
+      "license": "Apache-2.0",
+      "allow_patterns": [
+        "config.json",
+        "model.safetensors",
+        "sentencepiece.bpe.model",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json"
+      ]
+    },
+    {
+      "id": "whisper-small",
+      "repository": "Systran/faster-whisper-small",
+      "revision": "536b0662742c02347bc0e980a01041f333bce120",
+      "destination": "whisper-small",
+      "license": "MIT",
+      "allow_patterns": [
+        "config.json",
+        "model.bin",
+        "tokenizer.json",
+        "vocabulary.txt"
+      ]
+    }
+  ]
+}
