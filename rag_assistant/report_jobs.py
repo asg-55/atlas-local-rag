@@ -25,11 +25,24 @@ class ReportJobManager:
         self.source_dir = data_dir / "report_jobs"
         self.source_dir.mkdir(parents=True, exist_ok=True)
         self._wake = threading.Event()
+        self._stop = threading.Event()
         self.db.recover_report_jobs()
         self._worker = threading.Thread(
             target=self._run, name="atlas-report-ocr", daemon=True
         )
         self._worker.start()
+
+    def close(self, timeout: float | None = 5.0) -> None:
+        """Stop the worker after its current page so Windows can release the DB."""
+        self._stop.set()
+        self._wake.set()
+        self._worker.join(timeout=timeout)
+
+    def __enter__(self) -> "ReportJobManager":
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+        self.close()
 
     def submit(
         self,
@@ -80,7 +93,7 @@ class ReportJobManager:
         )
 
     def _run(self) -> None:
-        while True:
+        while not self._stop.is_set():
             job = self.db.claim_next_report_job()
             if job is None:
                 self._wake.wait(timeout=2.0)

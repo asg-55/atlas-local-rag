@@ -33,28 +33,28 @@ class ReportJobManagerTests(unittest.TestCase):
                 return report, [], []
 
             with patch("rag_assistant.report_jobs.extract_report_page", side_effect=fake_extract):
-                manager = ReportJobManager(db, root)
-                first, created = manager.submit("batch.pdf", content, 1, 3, 180)
-                duplicate, duplicate_created = manager.submit("renamed.pdf", content, 1, 3, 180)
-                self.assertTrue(created)
-                self.assertFalse(duplicate_created)
-                self.assertEqual(first["id"], duplicate["id"])
+                with ReportJobManager(db, root) as manager:
+                    first, created = manager.submit("batch.pdf", content, 1, 3, 180)
+                    duplicate, duplicate_created = manager.submit("renamed.pdf", content, 1, 3, 180)
+                    self.assertTrue(created)
+                    self.assertFalse(duplicate_created)
+                    self.assertEqual(first["id"], duplicate["id"])
 
-                deadline = time.monotonic() + 5
-                job = db.get_report_job(first["id"])
-                while job["status"] not in {"completed", "failed"} and time.monotonic() < deadline:
-                    time.sleep(0.05)
+                    deadline = time.monotonic() + 5
                     job = db.get_report_job(first["id"])
+                    while job["status"] not in {"completed", "failed"} and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                        job = db.get_report_job(first["id"])
 
-            self.assertEqual("completed", job["status"])
-            self.assertEqual([1, 2, 3], calls)
-            pages = db.report_job_pages(first["id"])
-            self.assertEqual(3, len(pages))
-            self.assertIsNotNone(pages[1]["error"])
-            reports, journal, quality = manager.result_frames(first["id"])
-            self.assertEqual(["Готово", "Ошибка", "Готово"], reports["Статус"].tolist())
-            self.assertTrue(journal.empty)
-            self.assertEqual(1, len(quality))
+                    self.assertEqual("completed", job["status"])
+                    self.assertEqual([1, 2, 3], calls)
+                    pages = db.report_job_pages(first["id"])
+                    self.assertEqual(3, len(pages))
+                    self.assertIsNotNone(pages[1]["error"])
+                    reports, journal, quality = manager.result_frames(first["id"])
+                    self.assertEqual(["Готово", "Ошибка", "Готово"], reports["Статус"].tolist())
+                    self.assertTrue(journal.empty)
+                    self.assertEqual(1, len(quality))
 
 
 if __name__ == "__main__":
