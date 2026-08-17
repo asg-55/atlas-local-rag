@@ -595,10 +595,12 @@ def _structured_frame_blocks(frame: pd.DataFrame, label: str) -> list[TextBlock]
 
 def parse_xlsx(path: Path) -> list[TextBlock]:
     blocks: list[TextBlock] = []
-    book = pd.ExcelFile(path, engine="openpyxl")
-    for sheet_name in book.sheet_names:
-        frame = pd.read_excel(path, sheet_name=sheet_name, header=None, dtype=object, engine="openpyxl")
-        blocks.extend(_structured_frame_blocks(frame, f"лист «{sheet_name}»"))
+    with pd.ExcelFile(path, engine="openpyxl") as book:
+        for sheet_name in book.sheet_names:
+            frame = pd.read_excel(
+                book, sheet_name=sheet_name, header=None, dtype=object
+            )
+            blocks.extend(_structured_frame_blocks(frame, f"лист «{sheet_name}»"))
     return blocks
 
 

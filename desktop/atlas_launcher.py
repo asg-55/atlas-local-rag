@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import os
+import platform
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -13,11 +16,69 @@ import urllib.error
 import urllib.request
 import webbrowser
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 LOOPBACK = "127.0.0.1"
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+ERROR_ALREADY_EXISTS = 183
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUPS = 3
+
+
+def instance_name(state_dir: Path) -> str:
+    fingerprint = hashlib.sha256(
+        str(state_dir.resolve()).casefold().encode("utf-8")
+    ).hexdigest()[:16]
+    return f"Local\\AtlasDesktop-{fingerprint}"
+
+
+class WindowsSingleInstance:
+    """Use a per-state-directory mutex so double-clicks cannot start two backends."""
+
+    def __init__(self, state_dir: Path) -> None:
+        self.handle = None
+        self.kernel32 = None
+        self.acquired = True
+        if os.name != "nt":
+            return
+
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        ctypes.set_last_error(0)
+        handle = kernel32.CreateMutexW(None, False, instance_name(state_dir))
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(handle)
+            self.acquired = False
+            return
+        self.handle = handle
+        self.kernel32 = kernel32
+
+    def close(self) -> None:
+        if self.handle is not None:
+            self.kernel32.CloseHandle(self.handle)
+            self.handle = None
+
+
+def rotate_log(path: Path, max_bytes: int = LOG_MAX_BYTES, backups: int = LOG_BACKUPS) -> None:
+    if backups < 1 or not path.is_file() or path.stat().st_size < max_bytes:
+        return
+    oldest = path.with_name(f"{path.name}.{backups}")
+    oldest.unlink(missing_ok=True)
+    for number in range(backups - 1, 0, -1):
+        source = path.with_name(f"{path.name}.{number}")
+        if source.is_file():
+            source.replace(path.with_name(f"{path.name}.{number + 1}"))
+    path.replace(path.with_name(f"{path.name}.1"))
 
 
 class WindowsProcessJob:
@@ -365,6 +426,120 @@ def check_payload(layout: DesktopLayout) -> dict:
     }
 
 
+def runtime_state_path(layout: DesktopLayout) -> Path:
+    return layout.state_dir / "runtime.json"
+
+
+def write_runtime_state(layout: DesktopLayout, app_url: str, backend: str) -> None:
+    payload = {
+        "pid": os.getpid(),
+        "app_url": app_url,
+        "backend": backend,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+    target = runtime_state_path(layout)
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    temporary.replace(target)
+
+
+def existing_app_url(layout: DesktopLayout) -> str | None:
+    try:
+        payload = json.loads(runtime_state_path(layout).read_text(encoding="utf-8"))
+        url = str(payload.get("app_url") or "")
+        parsed = urlparse(url)
+        if (
+            parsed.scheme == "http"
+            and parsed.hostname == LOOPBACK
+            and parsed.port is not None
+            and parsed.username is None
+            and parsed.password is None
+        ):
+            return url
+    except (FileNotFoundError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return None
+
+
+def physical_memory() -> dict[str, int] | None:
+    if os.name != "nt":
+        return None
+
+    class MemoryStatus(ctypes.Structure):
+        _fields_ = [
+            ("length", ctypes.c_ulong),
+            ("memory_load", ctypes.c_ulong),
+            ("total_physical", ctypes.c_ulonglong),
+            ("available_physical", ctypes.c_ulonglong),
+            ("total_page_file", ctypes.c_ulonglong),
+            ("available_page_file", ctypes.c_ulonglong),
+            ("total_virtual", ctypes.c_ulonglong),
+            ("available_virtual", ctypes.c_ulonglong),
+            ("available_extended_virtual", ctypes.c_ulonglong),
+        ]
+
+    status = MemoryStatus()
+    status.length = ctypes.sizeof(status)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if not kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return {
+        "total_physical": int(status.total_physical),
+        "available_physical": int(status.available_physical),
+        "memory_load_percent": int(status.memory_load),
+    }
+
+
+def vulkan_devices(layout: DesktopLayout) -> list[str]:
+    if not layout.llama_vulkan_exe.is_file():
+        return []
+    creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    try:
+        result = subprocess.run(
+            [str(layout.llama_vulkan_exe), "--list-devices"],
+            cwd=layout.llama_vulkan_exe.parent,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+            creationflags=creation_flags,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    lines = (result.stdout + "\n" + result.stderr).splitlines()
+    return [line.strip() for line in lines if line.strip().startswith("Vulkan")]
+
+
+def diagnostics_payload(layout: DesktopLayout) -> dict:
+    memory = physical_memory()
+    disk = shutil.disk_usage(layout.install_dir)
+    minimum_memory = 8 * 1024**3
+    minimum_disk_free = 12 * 1024**3
+    return {
+        "ready": not layout.missing_files(),
+        "system": {
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "cpu_threads": os.cpu_count(),
+            "memory": memory,
+            "install_disk": {
+                "total": disk.total,
+                "free": disk.free,
+            },
+            "vulkan_devices": vulkan_devices(layout),
+        },
+        "minimums": {
+            "memory_bytes": minimum_memory,
+            "disk_free_bytes": minimum_disk_free,
+            "memory_met": memory is None or memory["total_physical"] >= minimum_memory,
+            "disk_met": disk.free >= minimum_disk_free,
+        },
+        "components": check_payload(layout),
+    }
+
+
 def run(
     layout: DesktopLayout, no_browser: bool, context_size: int, gpu_mode: str
 ) -> int:
@@ -374,6 +549,14 @@ def run(
         raise FileNotFoundError(f"Установочный комплект Atlas неполон:\n{details}")
 
     layout.ensure_state_directories()
+    single_instance = WindowsSingleInstance(layout.state_dir)
+    if not single_instance.acquired:
+        url = existing_app_url(layout)
+        if url and not no_browser:
+            webbrowser.open(url)
+        print("Atlas уже запущен." + (f" {url}" if url else ""))
+        return 0
+    runtime_state_path(layout).unlink(missing_ok=True)
     llama_port = free_local_port()
     app_port = free_local_port()
     threads = max(1, (os.cpu_count() or 2) - 1)
@@ -385,6 +568,9 @@ def run(
     app_process = None
     llama_log = layout.logs_dir / "llama-server.log"
     app_log = layout.logs_dir / "atlas-backend.log"
+    rotate_log(llama_log)
+    rotate_log(app_log)
+    active_backend = ""
 
     try:
         with llama_log.open("a", encoding="utf-8") as llama_output, app_log.open(
@@ -419,6 +605,7 @@ def run(
                         timeout=120 if backend == "cpu" else 45,
                         headers={"Authorization": f"Bearer {api_key}"},
                     )
+                    active_backend = backend
                     break
                 except (RuntimeError, TimeoutError) as exc:
                     last_error = exc
@@ -441,6 +628,7 @@ def run(
             wait_for_health(
                 f"{app_url}/_stcore/health", app_process, timeout=120
             )
+            write_runtime_state(layout, app_url, active_backend)
             if not no_browser:
                 webbrowser.open(app_url)
             while llama_process.poll() is None and app_process.poll() is None:
@@ -453,6 +641,8 @@ def run(
         stop_process(app_process)
         stop_process(llama_process)
         process_job.close()
+        runtime_state_path(layout).unlink(missing_ok=True)
+        single_instance.close()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -465,6 +655,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--context-size", type=int, default=8192)
     parser.add_argument("--gpu", choices=("auto", "off", "vulkan"), default="auto")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--diagnostics", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
     return parser.parse_args(argv)
 
@@ -480,6 +671,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.check:
         payload = check_payload(layout)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0 if payload["ready"] else 2
+    if args.diagnostics:
+        payload = diagnostics_payload(layout)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0 if payload["ready"] else 2
     try:

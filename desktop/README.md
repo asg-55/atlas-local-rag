@@ -11,15 +11,18 @@ Docker-редакцию Atlas: `compose.yaml`, `.env`, проектные `data/
 Atlas\
   app\app.py
   app\rag_assistant\...
-  runtime\python\python.exe
-  runtime\llama\cpu\llama-server.exe
-  runtime\llama\vulkan\llama-server.exe   # опциональное ускорение
-
-%LOCALAPPDATA%\Atlas\
-  data\
+  desktop\atlas_launcher.py
   models\chat.gguf
   models\huggingface\...
   models\easyocr\...
+  runtime\python\python.exe
+  runtime\llama\cpu\llama-server.exe
+  runtime\llama\vulkan\llama-server.exe   # опциональное ускорение
+  runtime\libreoffice\...
+
+%LOCALAPPDATA%\Atlas\
+  data\
+  models\          # место для будущих отдельно установленных model packs
   logs\
 ```
 
@@ -27,6 +30,13 @@ Atlas\
 
 ```powershell
 python desktop\atlas_launcher.py --check
+```
+
+Расширенная диагностика также ничего не запускает. Она показывает комплектность,
+свободное место, физическую память и обнаруженные Vulkan-устройства:
+
+```powershell
+python desktop\atlas_launcher.py --diagnostics
 ```
 
 При обычном запуске супервизор выбирает свободные локальные порты. Если в
@@ -107,6 +117,12 @@ Launcher использует Windows Job Object с `KILL_ON_JOB_CLOSE`; жёс�
 подтвердил, что принудительное завершение родителя автоматически закрывает всё
 дерево llama-server/Streamlit.
 
+Повторный запуск Atlas не создаёт второй комплект процессов: Windows mutex
+привязан к каталогу пользовательского состояния, а сохранённый loopback URL
+открывается повторно. Технические логи ограничены 5 МБ и тремя резервными
+копиями на каждый процесс. В `runtime.json` находятся только PID, локальный URL,
+тип backend и время запуска; файл удаляется при штатной остановке.
+
 Офлайн-набор моделей занимает 2 211 722 234 байта, административный образ
 LibreOffice — 1 594 984 948 байт. Вместе с Python, Qwen и llama.cpp полный
 установленный каталог ожидаемо занимает около 9,2 ГБ; размер сжатого установщика
@@ -121,7 +137,38 @@ embedding достигли 4,42 ГБ. Поэтому Desktop запускает 
 RAG/OCR; после медиа-разбора и операций embeddings/reranker Desktop также
 очищает модельные cache. Docker-профиль этого поведения не включает.
 
-До пилотной поставки всё ещё нужны защита от двойного запуска, ротация
-технических логов, подписанный установочный manifest и измерение пиков на
-физической машине с 8 ГБ ОЗУ. Технически тяжёлые компоненты теперь работают
-последовательно, но отзывчивость CPU-профиля ещё нужно проверить отдельно.
+## Прототип установочного комплекта
+
+[`installer/atlas-desktop.iss`](installer/atlas-desktop.iss) описывает per-user
+установку Inno Setup 7 x64 в `%LOCALAPPDATA%\Programs\Atlas`. Администратор,
+Docker, Ollama и системный Python не нужны. Изменяемые данные остаются в
+`%LOCALAPPDATA%\Atlas` и намеренно не входят в правила удаления.
+
+Сухая проверка готового staging:
+
+```powershell
+./desktop/build_installer.ps1 `
+  -SourceDirectory model_cache/desktop `
+  -Version 0.1.0 `
+  -ValidateOnly
+```
+
+Сборка после установки Inno Setup 7:
+
+```powershell
+./desktop/build_installer.ps1 `
+  -SourceDirectory model_cache/desktop `
+  -Version 0.1.0
+```
+
+Так как payload больше 4,2 ГБ, результат является одним установочным комплектом:
+небольшой `.exe`, пронумерованные блоки `.bin` не более 2 ГБ и
+`SHA256SUMS.txt`. Каталоги build-cache `downloads` и `validation` не включаются.
+Отсутствие локального `ISCC.exe` не мешает проверять payload, но фактическая
+компиляция на этой машине пока не выполнялась. Для публичной поставки ещё нужны
+Authenticode-подпись EXE и подписанный release manifest.
+
+Искусственная симуляция 8 ГБ ОЗУ исключена: она не доказывает работу при реальном
+давлении памяти. Сейчас диагностика и запуск проверены на машине с 32 ГБ ОЗУ.
+Физический ПК с 8 ГБ остаётся отдельной приёмочной проверкой; до неё нельзя
+обещать комфортный CPU-only режим на такой конфигурации.

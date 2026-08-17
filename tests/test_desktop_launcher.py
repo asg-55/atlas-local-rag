@@ -7,16 +7,67 @@ from unittest.mock import patch
 from desktop.atlas_launcher import (
     DesktopLayout,
     LOOPBACK,
+    WindowsSingleInstance,
     WindowsProcessJob,
     backend_candidates,
     check_payload,
+    diagnostics_payload,
+    existing_app_url,
+    instance_name,
     llama_command,
+    rotate_log,
     runtime_environment,
     streamlit_command,
+    write_runtime_state,
 )
 
 
 class DesktopLauncherTests(unittest.TestCase):
+    def test_instance_name_is_stable_and_scoped_to_state_directory(self):
+        first = instance_name(Path("state-a"))
+        self.assertEqual(first, instance_name(Path("state-a")))
+        self.assertNotEqual(first, instance_name(Path("state-b")))
+        self.assertTrue(first.startswith("Local\\AtlasDesktop-"))
+
+    def test_native_mutex_rejects_second_instance_for_same_state(self):
+        if os.name != "nt":
+            self.skipTest("Windows mutex behavior only")
+        with tempfile.TemporaryDirectory() as directory:
+            first = WindowsSingleInstance(Path(directory))
+            second = WindowsSingleInstance(Path(directory))
+            try:
+                self.assertTrue(first.acquired)
+                self.assertFalse(second.acquired)
+            finally:
+                second.close()
+                first.close()
+
+    def test_log_rotation_keeps_bounded_backups(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "atlas.log"
+            log.write_text("first", encoding="utf-8")
+            rotate_log(log, max_bytes=1, backups=2)
+            log.write_text("second", encoding="utf-8")
+            rotate_log(log, max_bytes=1, backups=2)
+            log.write_text("third", encoding="utf-8")
+            rotate_log(log, max_bytes=1, backups=2)
+
+            self.assertEqual("third", (log.with_name("atlas.log.1")).read_text())
+            self.assertEqual("second", (log.with_name("atlas.log.2")).read_text())
+            self.assertFalse(log.with_name("atlas.log.3").exists())
+
+    def test_runtime_state_accepts_only_loopback_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            layout = DesktopLayout.resolve(root, root / "state")
+            layout.state_dir.mkdir()
+            write_runtime_state(layout, "http://127.0.0.1:19001", "cpu")
+            self.assertEqual("http://127.0.0.1:19001", existing_app_url(layout))
+
+            runtime = layout.state_dir / "runtime.json"
+            runtime.write_text('{"app_url":"https://example.com"}', encoding="utf-8")
+            self.assertIsNone(existing_app_url(layout))
+
     def test_process_job_is_a_safe_noop_outside_windows(self):
         if os.name == "nt":
             self.skipTest("Non-Windows behavior only")
@@ -124,6 +175,24 @@ class DesktopLauncherTests(unittest.TestCase):
                 set(payload["components"]),
             )
             self.assertIn("llama_server_vulkan", payload["optional_components"])
+
+    def test_diagnostics_reports_minimums_without_mutating_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            layout = DesktopLayout.resolve(root, root / "state")
+            with patch(
+                "desktop.atlas_launcher.physical_memory",
+                return_value={
+                    "total_physical": 16 * 1024**3,
+                    "available_physical": 8 * 1024**3,
+                    "memory_load_percent": 50,
+                },
+            ), patch("desktop.atlas_launcher.vulkan_devices", return_value=["Vulkan0: GPU"]):
+                payload = diagnostics_payload(layout)
+
+            self.assertTrue(payload["minimums"]["memory_met"])
+            self.assertEqual(["Vulkan0: GPU"], payload["system"]["vulkan_devices"])
+            self.assertFalse(layout.state_dir.exists())
 
 
 if __name__ == "__main__":
