@@ -65,6 +65,7 @@ class DesktopInstallerTests(unittest.TestCase):
 
     def test_preparer_uses_only_built_runtime_models_and_current_source(self):
         script = PREPARER.read_text(encoding="utf-8")
+        self.assertIn("[Parameter(Mandatory = $true)]", script)
         self.assertIn('@("runtime", "models")', script)
         self.assertIn('Join-Path $projectRoot "rag_assistant"', script)
         self.assertIn("status --porcelain", script)

@@ -144,13 +144,22 @@ RAG/OCR; после медиа-разбора и операций embeddings/rer
 Docker, Ollama и системный Python не нужны. Изменяемые данные остаются в
 `%LOCALAPPDATA%\Atlas` и намеренно не входят в правила удаления.
 
-Сначала из проверенного build-cache создаётся чистый payload. Скрипт требует
+Сначала все компоненты готовятся в одном staging. Каталог `model_cache/desktop`
+может содержать только базовый runtime и сам по себе не считается полным:
+
+```powershell
+python desktop/prepare_runtime.py --destination desktop/staging/components
+./desktop/build_python_runtime.ps1 -Destination desktop/staging/components
+./desktop/build_offline_assets.ps1 -Destination desktop/staging/components
+```
+
+Затем из полного проверенного component staging создаётся чистый payload. Скрипт требует
 чистое рабочее дерево, записывает commit исходников и не переносит `downloads`,
 `validation`, `data`, `.env` или рабочие документы:
 
 ```powershell
 ./desktop/prepare_installer_payload.ps1 `
-  -BasePayload model_cache/desktop `
+  -BasePayload desktop/staging/components `
   -Destination desktop/staging/Atlas
 ```
 

@@ -1,5 +1,6 @@
 param(
-    [string]$BasePayload = "model_cache\desktop",
+    [Parameter(Mandatory = $true)]
+    [string]$BasePayload,
     [string]$Destination = "desktop\staging\Atlas"
 )
 
