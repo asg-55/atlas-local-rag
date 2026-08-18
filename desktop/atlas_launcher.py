@@ -226,11 +226,13 @@ class DesktopLayout:
         state_model = state_dir / "models" / "chat.gguf"
         bundled_model = install_dir / "models" / "chat.gguf"
         default_model = state_model if state_model.exists() or not bundled_model.exists() else bundled_model
+        branded_python = install_dir / "runtime" / "python" / "Atlas.exe"
+        default_python = branded_python if branded_python.is_file() else install_dir / "runtime" / "python" / "python.exe"
         return cls(
             install_dir=install_dir,
             state_dir=state_dir,
             app_file=app_file,
-            python_exe=(python_exe or install_dir / "runtime" / "python" / "python.exe").resolve(),
+            python_exe=(python_exe or default_python).resolve(),
             llama_cpu_exe=(
                 llama_server_exe
                 or install_dir / "runtime" / "llama" / "cpu" / "llama-server.exe"
@@ -463,6 +465,73 @@ def existing_app_url(layout: DesktopLayout) -> str | None:
     return None
 
 
+def process_image_path(pid: int) -> Path | None:
+    if os.name != "nt" or pid < 1:
+        return None
+    from ctypes import wintypes
+
+    process_query_limited_information = 0x1000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return None
+    try:
+        capacity = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(capacity.value)
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(capacity)):
+            return None
+        return Path(buffer.value).resolve()
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _terminate_pid(pid: int) -> bool:
+    if os.name != "nt":
+        try:
+            os.kill(pid, 15)
+            return True
+        except OSError:
+            return False
+    from ctypes import wintypes
+
+    process_terminate = 0x0001
+    synchronize = 0x00100000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(process_terminate | synchronize, False, pid)
+    if not handle:
+        return False
+    try:
+        if not kernel32.TerminateProcess(handle, 0):
+            return False
+        kernel32.WaitForSingleObject(handle, 8000)
+        return True
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def stop_running_atlas(layout: DesktopLayout) -> bool:
+    try:
+        payload = json.loads(runtime_state_path(layout).read_text(encoding="utf-8"))
+        pid = int(payload["pid"])
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return False
+    image = process_image_path(pid)
+    allowed_names = {"atlas.exe", "python.exe", "pythonw.exe"}
+    runtime_dir = (layout.install_dir / "runtime" / "python").resolve()
+    if image is None or image.parent != runtime_dir or image.name.casefold() not in allowed_names:
+        return False
+    stopped = _terminate_pid(pid)
+    if stopped:
+        runtime_state_path(layout).unlink(missing_ok=True)
+    return stopped
+
+
 def physical_memory() -> dict[str, int] | None:
     if os.name != "nt":
         return None
@@ -656,6 +725,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--gpu", choices=("auto", "off", "vulkan"), default="auto")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--diagnostics", action="store_true")
+    parser.add_argument("--stop", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
     return parser.parse_args(argv)
 
@@ -677,6 +747,12 @@ def main(argv: list[str] | None = None) -> int:
         payload = diagnostics_payload(layout)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0 if payload["ready"] else 2
+    if args.stop:
+        if stop_running_atlas(layout):
+            print("Atlas остановлен.")
+        else:
+            print("Atlas не запущен.")
+        return 0
     try:
         return run(layout, args.no_browser, args.context_size, args.gpu)
     except (FileNotFoundError, RuntimeError, TimeoutError) as exc:

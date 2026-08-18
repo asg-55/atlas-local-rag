@@ -31,6 +31,8 @@ CloseApplications=force
 RestartApplications=no
 UsePreviousAppDir=yes
 UninstallDisplayName=Atlas Desktop
+UninstallDisplayIcon={app}\desktop\assets\atlas.ico
+SetupIconFile={#DesktopSource}\desktop\assets\atlas.ico
 Uninstallable=yes
 
 [Languages]
@@ -44,8 +46,9 @@ Name: "desktopicon"; Description: "Создать значок на рабоче
 Source: "{#DesktopSource}\*"; DestDir: "{app}"; Excludes: "\downloads\*,\validation\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Atlas"; Filename: "{app}\runtime\python\pythonw.exe"; Parameters: """{app}\desktop\atlas_launcher.py"" --install-dir ""{app}"""; WorkingDir: "{app}"
-Name: "{autodesktop}\Atlas"; Filename: "{app}\runtime\python\pythonw.exe"; Parameters: """{app}\desktop\atlas_launcher.py"" --install-dir ""{app}"""; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\Atlas"; Filename: "{app}\runtime\python\Atlas.exe"; Parameters: """{app}\desktop\atlas_launcher.py"" --install-dir ""{app}"""; WorkingDir: "{app}"; IconFilename: "{app}\desktop\assets\atlas.ico"
+Name: "{group}\Остановить Atlas"; Filename: "{app}\runtime\python\Atlas.exe"; Parameters: """{app}\desktop\atlas_launcher.py"" --install-dir ""{app}"" --stop"; WorkingDir: "{app}"; IconFilename: "{app}\desktop\assets\atlas.ico"
+Name: "{autodesktop}\Atlas"; Filename: "{app}\runtime\python\Atlas.exe"; Parameters: """{app}\desktop\atlas_launcher.py"" --install-dir ""{app}"""; WorkingDir: "{app}"; IconFilename: "{app}\desktop\assets\atlas.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\runtime\python\pythonw.exe"; Parameters: """{app}\desktop\atlas_launcher.py"" --install-dir ""{app}"""; WorkingDir: "{app}"; Description: "Запустить Atlas"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\runtime\python\Atlas.exe"; Parameters: """{app}\desktop\atlas_launcher.py"" --install-dir ""{app}"""; WorkingDir: "{app}"; Description: "Запустить Atlas"; Flags: nowait postinstall skipifsilent

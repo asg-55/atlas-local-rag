@@ -24,6 +24,8 @@ $requiredFiles = @(
     "payload-manifest.json",
     "runtime\python\python.exe",
     "runtime\python\pythonw.exe",
+    "runtime\python\Atlas.exe",
+    "desktop\assets\atlas.ico",
     "runtime\llama\cpu\llama-server.exe",
     "models\chat.gguf"
 )

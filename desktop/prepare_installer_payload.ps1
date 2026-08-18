@@ -1,10 +1,16 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$BasePayload,
-    [string]$Destination = "desktop\staging\Atlas"
+    [string]$Destination = "desktop\staging\Atlas",
+    [string]$RceditPath,
+    [string]$Version = "0.1.0"
 )
 
 $ErrorActionPreference = "Stop"
+if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Для ресурсов EXE нужна версия вида X.Y.Z: $Version"
+}
+$resourceVersion = "$Version.0"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $baseRoot = (Resolve-Path -LiteralPath (Join-Path $projectRoot $BasePayload)).Path
 $destinationRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot $Destination))
@@ -61,6 +67,47 @@ New-Item -ItemType Directory -Force -Path $desktopRoot | Out-Null
 foreach ($name in @("__init__.py", "atlas_launcher.py", "components.json", "model-packs.json", "README.md")) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $desktopRoot
 }
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "assets") -Destination $desktopRoot -Recurse
+
+$tools = Get-Content -LiteralPath (Join-Path $PSScriptRoot "installer-tools.json") -Raw | ConvertFrom-Json
+$rcedit = $tools.rcedit
+if (-not $RceditPath) {
+    $toolCache = Join-Path $projectRoot "tmp\desktop-build-tools"
+    New-Item -ItemType Directory -Force -Path $toolCache | Out-Null
+    $RceditPath = Join-Path $toolCache "rcedit-x64-$($rcedit.version).exe"
+}
+if (-not [IO.Path]::IsPathRooted($RceditPath)) {
+    $RceditPath = Join-Path $projectRoot $RceditPath
+}
+$RceditPath = [IO.Path]::GetFullPath($RceditPath)
+function Test-Rcedit([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $item = Get-Item -LiteralPath $Path
+    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+    return $item.Length -eq [int64]$rcedit.size -and $hash -eq ([string]$rcedit.sha256).ToLowerInvariant()
+}
+if (-not (Test-Rcedit $RceditPath)) {
+    $partial = "$RceditPath.part"
+    Invoke-WebRequest -Uri $rcedit.url -OutFile $partial
+    if (-not (Test-Rcedit $partial)) {
+        Remove-Item -LiteralPath $partial -Force
+        throw "Размер или SHA-256 rcedit не совпал"
+    }
+    Move-Item -LiteralPath $partial -Destination $RceditPath -Force
+}
+$atlasExe = Join-Path $destinationRoot "runtime\python\Atlas.exe"
+Copy-Item -LiteralPath (Join-Path $destinationRoot "runtime\python\pythonw.exe") -Destination $atlasExe
+$atlasIcon = Join-Path $desktopRoot "assets\atlas.ico"
+& $RceditPath $atlasExe `
+    --set-icon $atlasIcon `
+    --set-file-version $resourceVersion `
+    --set-product-version $resourceVersion `
+    --set-version-string "FileDescription" "Atlas Desktop" `
+    --set-version-string "ProductName" "Atlas Desktop" `
+    --set-version-string "InternalName" "Atlas" `
+    --set-version-string "OriginalFilename" "Atlas.exe" `
+    --set-version-string "CompanyName" "Atlas"
+if ($LASTEXITCODE -ne 0) { throw "Не удалось добавить бренд Atlas в исполняемый файл" }
 
 $buildMetadata = [ordered]@{
     schema_version = 1

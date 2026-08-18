@@ -17,6 +17,7 @@ from desktop.atlas_launcher import (
     llama_command,
     rotate_log,
     runtime_environment,
+    stop_running_atlas,
     streamlit_command,
     write_runtime_state,
 )
@@ -87,6 +88,44 @@ class DesktopLauncherTests(unittest.TestCase):
             self.assertEqual((Path(local) / "Atlas").resolve(), layout.state_dir)
             self.assertEqual(layout.state_dir / "data", layout.data_dir)
             self.assertNotEqual(layout.install_dir, layout.state_dir)
+
+    def test_layout_prefers_branded_atlas_executable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            branded = root / "runtime" / "python" / "Atlas.exe"
+            branded.parent.mkdir(parents=True)
+            branded.touch()
+
+            layout = DesktopLayout.resolve(root, root / "state")
+
+            self.assertEqual(branded.resolve(), layout.python_exe)
+
+    def test_stop_accepts_only_bundled_runtime_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            state.mkdir()
+            runtime = root / "runtime" / "python"
+            runtime.mkdir(parents=True)
+            atlas = runtime / "Atlas.exe"
+            atlas.touch()
+            layout = DesktopLayout.resolve(root, state)
+            (state / "runtime.json").write_text('{"pid": 123}', encoding="utf-8")
+
+            with patch("desktop.atlas_launcher.process_image_path", return_value=atlas.resolve()), patch(
+                "desktop.atlas_launcher._terminate_pid", return_value=True
+            ) as terminate:
+                self.assertTrue(stop_running_atlas(layout))
+                terminate.assert_called_once_with(123)
+            self.assertFalse((state / "runtime.json").exists())
+
+            (state / "runtime.json").write_text('{"pid": 456}', encoding="utf-8")
+            with patch(
+                "desktop.atlas_launcher.process_image_path",
+                return_value=(root / "unrelated" / "Atlas.exe").resolve(),
+            ), patch("desktop.atlas_launcher._terminate_pid") as terminate:
+                self.assertFalse(stop_running_atlas(layout))
+                terminate.assert_not_called()
 
     def test_portable_bundle_model_is_used_without_copying_to_user_state(self):
         with tempfile.TemporaryDirectory() as directory:

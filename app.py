@@ -20,6 +20,7 @@ from rag_assistant.anonymizer import (
     xlsx_technical_columns,
 )
 from rag_assistant.config import settings
+from rag_assistant.ingest_jobs import IngestJobManager
 from rag_assistant.service import AssistantService
 from rag_assistant.report_extractor import (
     export_reports_xlsx,
@@ -27,6 +28,7 @@ from rag_assistant.report_extractor import (
     render_pdf_page,
 )
 from rag_assistant.report_jobs import ReportJobManager
+from rag_assistant.ui_options import context_size_options, normalized_context_limit
 
 
 logger = logging.getLogger(__name__)
@@ -211,6 +213,37 @@ def get_report_job_manager(_db) -> ReportJobManager:
 
 
 report_jobs = get_report_job_manager(db)
+
+
+@st.cache_resource
+def get_ingest_job_manager(_service) -> IngestJobManager:
+    return IngestJobManager(_service)
+
+
+ingest_jobs = get_ingest_job_manager(service)
+
+
+@st.fragment(run_every=2.0)
+def render_ingest_job_progress() -> None:
+    jobs = ingest_jobs.snapshots()
+    active = [job for job in jobs if job["status"] in {"queued", "running"}]
+    finished = [job for job in jobs if job["status"] not in {"queued", "running"}]
+    for job in active:
+        label = "Ожидает обработки" if job["status"] == "queued" else "Индексируется"
+        st.info(f"⏳ {job['filename']}: {label}. Можно перейти в другой раздел Atlas.")
+    if finished:
+        for job in finished:
+            if job["status"] == "ready":
+                chunks = (job.get("result") or {}).get("chunks", 0)
+                st.success(f"{job['filename']}: добавлено {chunks} фрагментов")
+            elif job["status"] == "duplicate":
+                st.warning(f"{job['filename']}: этот файл уже есть в библиотеке")
+            else:
+                st.error(f"{job['filename']}: {job.get('error') or 'ошибка обработки'}")
+        if st.button("Обновить библиотеку", key="refresh-after-indexing"):
+            ingest_jobs.clear_finished()
+            st.cache_data.clear()
+            st.rerun()
 
 
 @st.fragment(run_every=2.0)
@@ -426,23 +459,30 @@ with st.sidebar:
             "Вручную": {"temperature": 0.25, "tokens": 4096, "chunks": 10, "ctx": 32768, "top_p": 0.9},
         }
         defaults = profile_values[quality_profile]
-        model_context_limit = service.ollama.context_length(selected_model)
-        context_options = [value for value in [8192, 16384, 32768, 65536] if value <= model_context_limit]
-        if not context_options:
-            context_options = [min(8192, model_context_limit)]
+        model_context_limit = normalized_context_limit(service.ollama.context_length(selected_model))
+        context_options = context_size_options(model_context_limit)
         temperature = st.slider(
             "Температура", 0.0, 1.0, defaults["temperature"], 0.05,
             key=f"temperature-{quality_profile}",
             help="Ниже — точнее и стабильнее; выше — разнообразнее.",
         )
         default_ctx = max(value for value in context_options if value <= min(defaults["ctx"], max(context_options)))
-        num_ctx = st.select_slider(
-            "Контекст модели",
-            context_options,
-            value=default_ctx,
-            key=f"ctx-{quality_profile}-{selected_model}",
-            help="Общий бюджет: системная инструкция, история, найденные фрагменты и ответ.",
-        )
+        if len(context_options) == 1:
+            num_ctx = st.selectbox(
+                "Контекст модели",
+                context_options,
+                index=0,
+                key=f"ctx-{quality_profile}-{selected_model}",
+                help="Общий бюджет: системная инструкция, история, найденные фрагменты и ответ.",
+            )
+        else:
+            num_ctx = st.select_slider(
+                "Контекст модели",
+                context_options,
+                value=default_ctx,
+                key=f"ctx-{quality_profile}-{selected_model}",
+                help="Общий бюджет: системная инструкция, история, найденные фрагменты и ответ.",
+            )
         answer_ceiling = max(512, min(32768, num_ctx - 4096))
         answer_options = [
             value
@@ -679,20 +719,16 @@ if active_section == "Файлы":
         "Полностраничные изображения в PDF распознаются автоматически; таблицы восстанавливаются по ячейкам и сохраняют разделители столбцов.</div>",
         unsafe_allow_html=True,
     )
+    render_ingest_job_progress()
     if uploaded_files and st.button("Добавить в библиотеку", type="primary"):
-        progress = st.progress(0, text="Подготовка")
-        for number, uploaded in enumerate(uploaded_files, start=1):
-            progress.progress((number - 1) / len(uploaded_files), text=f"Индексирую {uploaded.name}")
-            try:
-                result = service.ingest(uploaded.name, uploaded.getvalue())
-                if result["status"] == "duplicate":
-                    st.warning(f"{uploaded.name}: этот файл уже есть в библиотеке")
-                else:
-                    st.success(f"{uploaded.name}: добавлено {result['chunks']} фрагментов")
-            except Exception as exc:
-                st.error(f"{uploaded.name}: {exc}")
-        progress.progress(1.0, text="Готово")
-        st.cache_data.clear()
+        added = 0
+        for uploaded in uploaded_files:
+            _job, created = ingest_jobs.submit(uploaded.name, uploaded.getvalue())
+            added += int(created)
+        if added:
+            st.toast(f"Файлов поставлено в очередь: {added}")
+        else:
+            st.toast("Эти файлы уже обрабатываются")
         st.rerun()
 
     st.divider()

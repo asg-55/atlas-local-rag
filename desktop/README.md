@@ -12,10 +12,12 @@ Atlas\
   app\app.py
   app\rag_assistant\...
   desktop\atlas_launcher.py
+  desktop\assets\atlas.ico
   models\chat.gguf
   models\huggingface\...
   models\easyocr\...
   runtime\python\python.exe
+  runtime\python\Atlas.exe
   runtime\llama\cpu\llama-server.exe
   runtime\llama\vulkan\llama-server.exe   # опциональное ускорение
   runtime\libreoffice\...
@@ -47,6 +49,13 @@ backend. Затем запускается Streamlit и проверяется `
 каждый запуск. Для Hugging Face принудительно включён offline-режим, а
 изменяемые данные находятся вне каталога приложения.
 
+Ярлык запускает брендированную копию упакованного `pythonw.exe` с именем
+`Atlas.exe`, и поэтому в Проводнике и Диспетчере задач основной процесс
+отображается как Atlas. Иконка повторяет знак `◈` из интерфейса. Команда
+`Остановить Atlas` в меню «Пуск» завершает супервизор; Windows Job Object затем
+закрывает llama-server и Streamlit. Перед остановкой PID дополнительно
+проверяется по пути исполняемого файла внутри установленного runtime.
+
 ## Закреплённые компоненты прототипа
 
 [`components.json`](components.json) фиксирует версии, URL, размер и SHA-256:
@@ -57,6 +66,11 @@ backend. Затем запускается Streamlit и проверяется `
 - llama.cpp `b10456` Windows x64 CPU — обязательный backend;
 - llama.cpp `b10456` Windows x64 Vulkan — опциональный GPU backend для NVIDIA,
   AMD и Intel при наличии рабочего Vulkan-драйвера.
+
+Для создания ресурсов `Atlas.exe` используется только во время сборки
+закреплённый `rcedit` 2.0.0. Его URL, размер и SHA-256 находятся в
+[`installer-tools.json`](installer-tools.json); в готовый комплект сам rcedit
+не включается.
 
 Python-зависимости Desktop отделены от Docker-зависимостей. Прямые версии
 перечислены в `requirements-windows.in`, а `requirements-windows.lock.json`
@@ -160,7 +174,8 @@ python desktop/prepare_runtime.py --destination desktop/staging/components
 ```powershell
 ./desktop/prepare_installer_payload.ps1 `
   -BasePayload desktop/staging/components `
-  -Destination desktop/staging/Atlas
+  -Destination desktop/staging/Atlas `
+  -Version 0.1.0
 ```
 
 В корне payload создаётся `payload-manifest.json` с относительным путём,

@@ -2,15 +2,28 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from PIL import Image
+
 from desktop.payload_manifest import create_manifest, verify_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 ISS = ROOT / "desktop" / "installer" / "atlas-desktop.iss"
 BUILDER = ROOT / "desktop" / "build_installer.ps1"
 PREPARER = ROOT / "desktop" / "prepare_installer_payload.ps1"
+ICON = ROOT / "desktop" / "assets" / "atlas.ico"
+MARK = ROOT / "desktop" / "assets" / "atlas-mark.png"
 
 
 class DesktopInstallerTests(unittest.TestCase):
+    def test_brand_assets_are_valid_and_include_windows_icon_sizes(self):
+        with Image.open(MARK) as mark:
+            self.assertEqual("PNG", mark.format)
+            self.assertEqual((256, 256), mark.size)
+        with Image.open(ICON) as icon:
+            self.assertEqual("ICO", icon.format)
+            self.assertIn((16, 16), icon.info["sizes"])
+            self.assertIn((256, 256), icon.info["sizes"])
+
     def test_payload_manifest_detects_content_changes_and_extra_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -49,7 +62,9 @@ class DesktopInstallerTests(unittest.TestCase):
 
     def test_installer_launches_bundled_runtime_without_docker_or_ollama(self):
         script = ISS.read_text(encoding="utf-8")
-        self.assertIn(r"runtime\python\pythonw.exe", script)
+        self.assertIn(r"runtime\python\Atlas.exe", script)
+        self.assertIn(r"desktop\assets\atlas.ico", script)
+        self.assertIn("Остановить Atlas", script)
         self.assertIn("atlas_launcher.py", script)
         self.assertNotIn("docker", script.casefold())
         self.assertNotIn("ollama", script.casefold())
@@ -68,6 +83,8 @@ class DesktopInstallerTests(unittest.TestCase):
         self.assertIn("[Parameter(Mandatory = $true)]", script)
         self.assertIn('@("runtime", "models")', script)
         self.assertIn('Join-Path $projectRoot "rag_assistant"', script)
+        self.assertIn('Join-Path $PSScriptRoot "assets"', script)
+        self.assertIn("--set-version-string \"ProductName\" \"Atlas Desktop\"", script)
         self.assertIn("status --porcelain", script)
         self.assertNotIn('Join-Path $projectRoot "data"', script)
         self.assertNotIn('Join-Path $projectRoot ".env"', script)
