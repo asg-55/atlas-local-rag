@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
+DOCKERFILE = ROOT / "Dockerfile"
 ILLUSTRATIONS = (
     ROOT / "docs" / "assets" / "atlas-readme-hero.svg",
     ROOT / "docs" / "assets" / "atlas-architecture.svg",
@@ -13,6 +14,14 @@ ILLUSTRATIONS = (
 
 
 class ReadmeTests(unittest.TestCase):
+    def test_ci_image_contains_readme_assets_but_runtime_layer_does_not(self):
+        content = DOCKERFILE.read_text(encoding="utf-8")
+        test_stage = content.split("FROM atlas-runtime-base AS test", 1)[1].split(
+            "FROM atlas-runtime-base AS runtime", 1
+        )[0]
+        self.assertIn("COPY README.md ./", test_stage)
+        self.assertIn("COPY docs/assets ./docs/assets", test_stage)
+
     def test_readme_references_all_atlas_illustrations(self):
         content = README.read_text(encoding="utf-8")
         for illustration in ILLUSTRATIONS:

@@ -43,6 +43,8 @@ CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=85
 FROM atlas-runtime-base AS test
 
 COPY desktop ./desktop
+COPY docs/assets ./docs/assets
+COPY README.md ./
 COPY tests ./tests
 
 FROM atlas-runtime-base AS runtime
