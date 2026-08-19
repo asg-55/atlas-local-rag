@@ -1,113 +1,143 @@
-# Atlas - локальный RAG-ассистент
+# Atlas
 
-Atlas превращает рабочие документы в локальную базу знаний: принимает новые материалы, индексирует их, отвечает со ссылками на исходные фрагменты и сохраняет историю диалогов. Отдельный модуль извлекает данные из многостраничных производственных PDF-отчетов в проверяемый Excel.
+<p align="center">
+  <img src="docs/assets/atlas-readme-hero.svg" width="100%" alt="Atlas — локальный RAG-ассистент и рабочий помощник">
+</p>
 
-Данные и модели остаются на вашем компьютере или сервере. Проект развивает две независимые редакции: текущий стабильный Atlas для разработки и личной работы использует локальную [Ollama](https://ollama.com/) и Docker; будущий Atlas Desktop предназначен для установки на рабочий Windows-ПК без Docker, Ollama и системного Python. Desktop не заменяет и не изменяет Docker-сценарий. Его исходники, manifest и результаты аудита находятся в [`desktop/`](desktop/) и [docs/windows-portable-audit.md](docs/windows-portable-audit.md).
+<p align="center">
+  <a href="https://github.com/asg-55/atlas-local-rag/actions/workflows/docker.yml"><img alt="Docker build" src="https://github.com/asg-55/atlas-local-rag/actions/workflows/docker.yml/badge.svg"></a>
+  <img alt="Python 3.11" src="https://img.shields.io/badge/Python-3.11-252525?logo=python&amp;logoColor=white">
+  <img alt="Streamlit" src="https://img.shields.io/badge/UI-Streamlit-252525?logo=streamlit&amp;logoColor=white">
+  <img alt="LLM" src="https://img.shields.io/badge/LLM-Ollama%20%7C%20llama.cpp-252525">
+  <img alt="Local first" src="https://img.shields.io/badge/data-local--first-252525">
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-252525"></a>
+</p>
 
-Лицензия: [MIT](LICENSE).
+<p align="center">
+  <b>Локальный ИИ-ассистент для инженерных документов, корпоративной базы знаний, анализа данных, OCR и рабочего кода.</b><br>
+  Atlas превращает разрозненные файлы в проверяемый диалог с источниками — без обязательных облачных API и передачи рабочих данных третьим сторонам.
+</p>
 
-## Возможности
+---
 
-- PDF, DOC, DOCX, XLSX, TXT, Markdown, CSV, JSON, изображения и аудио;
-- OCR русских и английских сканов, включая таблицы;
-- гибридный поиск: multilingual embeddings + BM25 + Reciprocal Rank Fusion + reranker;
-- контекст диалога и переформулирование уточняющих вопросов для поиска;
-- временные вложения диалога без embeddings и добавления в постоянную RAG-библиотеку;
-- единый чат, который выбирает обычный ответ, RAG, анализ вложения, создание или обсуждение кода для каждого сообщения;
-- анализ XLSX, CSV и JSON со сводкой по всему набору данных прямо в диалоге;
-- небольшие рабочие решения на VBA, Python и C# без выполнения кода;
-- режим ответа только по документам или с общими знаниями модели;
-- выбор Ollama-модели, длины ответа, числа источников и параметров генерации в UI;
-- сохранение документов, индекса и истории в SQLite;
-- фоновая последовательная индексация: после постановки файлов в очередь можно переключаться между разделами;
-- удаление материалов и диалогов из интерфейса;
-- специализированное пакетное извлечение отчетов BCNX-A10 в XLSX;
-- обратимое обезличивание DOCX, XLSX, PPTX, Outlook EML, CSV, TXT, JSON и Markdown с зашифрованным ключом;
-- Docker Compose, HTTPS-профиль Caddy и автоматическая публикация образа в GHCR.
+## Зачем нужен Atlas
 
-## Как устроен Atlas
+Обычная LLM знает общие сведения, но не знает локальные регламенты, паспорта оборудования, отчёты и таблицы организации. Atlas добавляет к локальной модели управляемый контур документов: сохраняет материалы, индексирует их, находит релевантные фрагменты и формирует ответ со ссылками на первоисточник.
 
-```text
-Сообщение + история -> маршрутизатор ответа
-                            |
-                            +-> обычный разговор
-                            +-> документы -> embeddings + BM25 -> RRF -> reranker
-                            +-> XLSX/CSV/JSON -> структура + полная статистическая сводка
-                            +-> создание кода -> черновик -> отдельная проверка
-                            +-> обсуждение предыдущего кода
-                            |
-                            v
-                    Ollama -> единый ответ + источники
+| Рабочая задача | Что делает Atlas |
+|---|---|
+| **Найти сведения в документах** | Ищет одновременно по смыслу и точным словам, объединяет и переранжирует результаты. |
+| **Разобрать таблицу или выгрузку** | Показывает структуру, пропуски, диапазоны, средние, частые значения и релевантные строки. |
+| **Обсудить или создать код** | Работает с VBA, Python и C#, сохраняет контекст обсуждения и отдельно проверяет созданный код. |
+| **Оцифровать сканы и отчёты** | Выполняет OCR, восстанавливает табличную сетку и экспортирует проверяемый XLSX. |
+| **Подготовить файл для внешней обработки** | Обратимо обезличивает Office, EML и текстовые форматы с отдельным зашифрованным ключом. |
+| **Работать с закрытыми данными** | Хранит файлы, историю, индексы и модели локально; после подготовки Desktop работает офлайн. |
 
-XLSX/CSV/JSON -> структура + полная статистическая сводка -> контекст анализа (без RAG-индекса)
+## Что умеет
 
-Остальные вложения диалога -> прямое извлечение текста -> контекст ответа (без RAG-индекса)
+- единый чат для обычных вопросов, RAG, анализа вложений, создания и обсуждения кода;
+- PDF, DOC, DOCX, XLSX, CSV, JSON, TXT, Markdown, изображения и аудио;
+- постоянная база знаний и временные вложения диалога без добавления в RAG;
+- multilingual embeddings + BM25/SQLite FTS5 + Reciprocal Rank Fusion + cross-encoder reranker;
+- база примерно до 50–100 тысяч фрагментов без загрузки всего текста в RAM;
+- русский и английский OCR через EasyOCR и OpenCV, локальная транскрибация через faster-whisper;
+- фоновая последовательная индексация файлов и устойчивые OCR-задания;
+- специализированное извлечение производственных отчётов BCNX-A10 в Excel;
+- обратимое обезличивание DOCX, XLSX, PPTX, EML, CSV, TXT, JSON и MD;
+- Docker-редакция с Ollama и отдельная переносимая Windows-редакция на llama.cpp;
+- локальное хранение в SQLite, журналирование, диагностика и автоматическая сборка образа в GitHub Actions.
 
-PDF с отчетами -> выравнивание -> сетка таблиц -> OCR ячеек -> контроль -> Excel
+## Как работает запрос
 
-Office/EML/CSV/TXT/JSON/MD -> проверка найденных данных -> нейтральные метки + зашифрованный ключ
-                                              |
-обработанный файл + ключ + пароль -------------+-> восстановленный документ
+1. Маршрутизатор учитывает новое сообщение, историю и вложения и определяет тип задачи.
+2. Для документного вопроса Atlas формирует самостоятельный поисковый запрос.
+3. Dense-поиск в FAISS и lexical-поиск BM25/FTS5 создают независимые списки кандидатов.
+4. Reciprocal Rank Fusion объединяет списки, затем cross-encoder повторно оценивает лучшие фрагменты.
+5. Найденный контекст, история и инструкция передаются локальной LLM.
+6. Пользователь получает единый ответ, источники и может продолжить обсуждение в том же диалоге.
+
+Числовая аналитика, структура таблиц и специализированные производственные формы обрабатываются программно. LLM объясняет результат, но не подменяет собой вычисления и не угадывает расположение полей отчёта.
+
+<p align="center">
+  <img src="docs/assets/atlas-architecture.svg" width="100%" alt="Техническая архитектура Atlas">
+</p>
+
+## Технический профиль
+
+| Слой | Реализация |
+|---|---|
+| **Язык и UI** | Python 3.11, Streamlit 1.46 |
+| **LLM transport** | Ollama в Docker-редакции; OpenAI-совместимый `llama-server`/llama.cpp в Desktop |
+| **Основные модели** | Qwen 3.5 9B в текущем Docker-профиле; Qwen 3.5 4B GGUF Q4_K_M в первом Desktop-комплекте |
+| **Embeddings** | `intfloat/multilingual-e5-base`, dense-векторы размерности 768 |
+| **Retrieval** | FAISS IndexFlatIP + BM25 или SQLite FTS5 + RRF |
+| **Reranking** | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` |
+| **Хранилище** | SQLite/WAL, FTS5, файловое хранилище оригиналов, FAISS index |
+| **Документы** | PyMuPDF, python-docx, openpyxl, pandas, lxml, portable/system LibreOffice |
+| **OCR и аудио** | EasyOCR, OpenCV, Pillow, faster-whisper, PyAV |
+| **Безопасность** | localhost bind, опциональный пароль UI, случайный API-ключ llama-server, offline-флаги Hugging Face |
+| **Поставка** | Docker Compose/GHCR или per-user Windows installer на Inno Setup 7 |
+| **GPU/CPU** | CPU обязателен; Desktop автоматически пробует Vulkan и откатывается на CPU |
+
+<p align="center">
+  <img src="docs/assets/atlas-local-data-flow.svg" width="100%" alt="Локальный жизненный цикл данных Atlas">
+</p>
+
+## Две независимые редакции
+
+| | Docker edition | Atlas Desktop |
+|---|---|---|
+| **Назначение** | Разработка, личная рабочая установка, сервер | Установка коллегой почти как обычной Windows-программы |
+| **LLM** | Локальная Ollama, по умолчанию `qwen3.5:9b` | Встроенный llama.cpp и Qwen 3.5 4B Q4_K_M |
+| **Зависимости** | Docker Desktop + Ollama | Всё включено: Python, GGUF, llama.cpp, ML-модели и LibreOffice |
+| **Ускорение** | Определяется Ollama | Vulkan при наличии, автоматический CPU fallback |
+| **Данные** | `data/` и `model_cache/` проекта | `%LOCALAPPDATA%\Atlas`, отдельно от каталога приложения |
+| **Статус** | Основной рабочий контур | Проверенный технический прототип; публичный EXE пока не подписан |
+
+Desktop не маскирует Docker или Ollama внутри установщика. Это отдельная нативная схема запуска с упакованным Python и llama.cpp. Подробности, состав дистрибутива и результаты измерений находятся в [`desktop/README.md`](desktop/README.md) и [`docs/windows-portable-audit.md`](docs/windows-portable-audit.md).
+
+## Быстрый запуск Docker edition на Windows
+
+Понадобятся [Docker Desktop](https://www.docker.com/products/docker-desktop/) и [Ollama](https://ollama.com/download).
+
+```powershell
+git clone https://github.com/asg-55/atlas-local-rag.git
+cd atlas-local-rag
+ollama pull qwen3.5:9b
+Copy-Item .env.example .env
+docker compose up -d --build
 ```
 
-Чат и конвейер отчетов разделены намеренно. Языковая модель не угадывает структуру производственной формы: значения извлекаются детерминированно из найденных таблиц и остаются доступными для проверки перед экспортом.
+Откройте <http://127.0.0.1:8501>. При первой индексации Atlas загрузит модели embeddings, reranker и EasyOCR в `model_cache/`; повторная загрузка при следующем запуске не потребуется.
 
-## Быстрый запуск на Windows
+Для компьютера с меньшим объёмом памяти можно выбрать другую локальную instruct-модель в `.env`. Реальная скорость зависит от CPU, GPU, доступной памяти, длины контекста и формата документов.
 
-Нужны [Docker Desktop](https://www.docker.com/products/docker-desktop/) и [Ollama](https://ollama.com/download).
+## Структура проекта
 
-1. Загрузите модель ответа:
+```text
+app.py                       Streamlit-интерфейс и маршрутизация UI
+rag_assistant/               RAG, парсеры, OCR, LLM-клиенты и бизнес-логика
+desktop/                     независимый Windows runtime и installer
+scripts/                     диагностика, benchmarks и интеграционные проверки
+tests/                       unit- и регрессионные тесты
+data/                        локальные документы, SQLite и индексы — не в Git
+model_cache/                 локальные ML-модели — не в Git
+compose.yaml                 основной Docker-контур
+Dockerfile                   runtime- и test-образы
+.github/workflows/docker.yml CI, тестирование и публикация GHCR
+```
 
-   ```powershell
-   ollama pull qwen3.5:9b
-   ```
-
-   Для компьютера с меньшим объемом памяти можно использовать:
-
-   ```powershell
-   ollama pull qwen2.5:7b-instruct-q4_K_M
-   ```
-
-2. Скопируйте настройки и при необходимости измените модель:
-
-   ```powershell
-   Copy-Item .env.example .env
-   ```
-
-3. Запустите `launch.bat` либо:
-
-   ```powershell
-   docker compose up -d --build
-   ```
-
-4. Откройте <http://localhost:8501>.
-
-При первой индексации Atlas скачает embedding-модель, reranker и модели EasyOCR. Они сохраняются в `model_cache/`, поэтому следующий запуск проходит без повторной загрузки.
-
-Проектирование отдельной сборки без Docker и Ollama описано в
-[`docs/windows-portable-audit.md`](docs/windows-portable-audit.md). В
-[`desktop/`](desktop/) находятся локальный супервизор и закреплённый manifest
-Qwen3.5-4B Q4_K_M, CPU/Vulkan-пакетов llama.cpp, официальный embeddable Python,
-lock Windows wheels, офлайн-модели RAG/OCR/Whisper и portable LibreOffice. Это
-отдельный контур сборки:
-его runtime, staging и модель не включаются в Docker-образ, а Docker Compose
-по-прежнему использует Ollama и каталоги `data/`, `model_cache/` проекта.
-Добавлен проверяемый проект per-user установочного комплекта Inno Setup 7;
-он запускает упакованный backend одним ярлыком и сохраняет пользовательские
-данные независимо от обновления и удаления приложения. Готовый подписанный
-релиз ещё не выпущен.
-
-## Настройки
+## Конфигурация
 
 | Переменная | Значение по умолчанию | Назначение |
 |---|---:|---|
 | `APP_PORT` | `8501` | Порт интерфейса |
 | `HOST_BIND` | `127.0.0.1` | Локальный bind; для доверенной LAN можно задать `0.0.0.0` |
-| `APP_PASSWORD` | пусто | Пароль интерфейса; обязателен для удаленного доступа |
-| `LLM_BACKEND` | `ollama` | LLM-транспорт: стабильный `ollama` или экспериментальный `llama_cpp` |
+| `APP_PASSWORD` | пусто | Пароль интерфейса; обязателен для удалённого доступа |
+| `LLM_BACKEND` | `ollama` | LLM-транспорт: `ollama` или `llama_cpp` |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Ollama, доступная из контейнера |
-| `LLAMA_BASE_URL` | `http://host.docker.internal:8080` | OpenAI-совместимый API локального `llama-server` |
-| `CHAT_MODEL` | `qwen3.5:9b` | Модель ответа по умолчанию; для слабого компьютера можно выбрать `qwen2.5:7b-instruct-q4_K_M` |
+| `LLAMA_BASE_URL` | `http://host.docker.internal:8080` | OpenAI-совместимый API локального llama-server |
+| `CHAT_MODEL` | `qwen3.5:9b` | Модель ответа по умолчанию |
 | `EMBEDDING_MODEL` | `intfloat/multilingual-e5-base` | Модель dense-поиска |
 | `RERANKER_MODEL` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | Финальное ранжирование кандидатов |
 | `ENABLE_RERANKER` | `true` | Позволяет отключить reranker на слабом CPU |
@@ -116,13 +146,13 @@ lock Windows wheels, офлайн-модели RAG/OCR/Whisper и portable Libre
 | `LEXICAL_CANDIDATES` | `40` | Базовое число кандидатов лексического поиска |
 | `MAX_SEARCH_CANDIDATES` | `120` | Верхняя граница адаптивного пула каждого поискового канала |
 | `MAX_RERANK_CANDIDATES` | `100` | Максимум фрагментов для финального reranker |
-| `BM25_MEMORY_THRESHOLD` | `20000` | После этого числа фрагментов лексический поиск переходит на дисковый SQLite FTS5 |
+| `BM25_MEMORY_THRESHOLD` | `20000` | Порог перехода лексического поиска на SQLite FTS5 |
 | `OCR_PDF_MODE` | `auto` | `auto`, `always` или `off` для обычных PDF |
-| `OCR_DPI` | `220` | Разрешение обычного OCR; модуль отчетов выбирает DPI в UI |
+| `OCR_DPI` | `220` | Разрешение обычного OCR; модуль отчётов выбирает DPI в UI |
 | `ASSISTANT_IMAGE` | `atlas-local-rag:latest` | Готовый Docker-образ вместо локальной сборки |
 | `DOMAIN` | `knowledge.example.com` | Домен HTTPS-профиля Caddy |
 
-`.env`, пользовательские документы, база данных и кэш моделей исключены из Git.
+`.env`, пользовательские документы, база данных, ключи обезличивания и кэш моделей исключены из Git.
 
 ### Масштабирование базы знаний
 

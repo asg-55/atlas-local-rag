@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="520" viewBox="0 0 1400 520" role="img" aria-labelledby="title desc">
+  <title id="title">Локальный жизненный цикл данных Atlas</title>
+  <desc id="desc">Документы остаются на компьютере и обрабатываются локальными компонентами</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0 0 9 3 0 6Z" fill="#8b8b8b"/></marker></defs>
+  <rect width="1400" height="520" rx="30" fill="#1b1b1b"/>
+  <text x="64" y="72" fill="#f0f0f0" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="700">Данные не покидают компьютер</text>
+  <text x="64" y="105" fill="#aaa" font-family="Segoe UI, Arial, sans-serif" font-size="16">Local-first архитектура: хранение, поиск, OCR и генерация выполняются внутри одного доверенного контура.</text>
+  <rect x="50" y="138" width="1300" height="320" rx="24" fill="#222" stroke="#424242" stroke-dasharray="9 8"/>
+  <text x="78" y="176" fill="#777" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="700">КОМПЬЮТЕР ПОЛЬЗОВАТЕЛЯ · 127.0.0.1</text>
+  <g stroke="#8b8b8b" stroke-width="2.5" marker-end="url(#a)"><path d="M310 302H400"/><path d="M662 302H752"/><path d="M1014 302H1104"/></g>
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <g transform="translate(88 217)"><rect width="222" height="170" rx="20" fill="#303030" stroke="#484848"/><text x="22" y="42" fill="#aaa" font-size="13" font-weight="700">МАТЕРИАЛЫ</text><text x="22" y="78" fill="#f0f0f0" font-size="19" font-weight="700">Документы</text><text x="22" y="108" fill="#ccc" font-size="14">Таблицы · сканы</text><text x="22" y="133" fill="#ccc" font-size="14">Аудио · рабочий код</text></g>
+    <g transform="translate(400 217)"><rect width="262" height="170" rx="20" fill="#ececec"/><text x="22" y="42" fill="#666" font-size="13" font-weight="700">ЛОКАЛЬНАЯ ОБРАБОТКА</text><text x="22" y="78" fill="#171717" font-size="19" font-weight="700">Atlas backend</text><text x="22" y="108" fill="#444" font-size="14">Python · OCR · embeddings</text><text x="22" y="133" fill="#444" font-size="14">RAG · маршрутизация</text></g>
+    <g transform="translate(752 217)"><rect width="262" height="170" rx="20" fill="#303030" stroke="#484848"/><text x="22" y="42" fill="#aaa" font-size="13" font-weight="700">ЛОКАЛЬНЫЙ INFERENCE</text><text x="22" y="78" fill="#f0f0f0" font-size="19" font-weight="700">Qwen 3.5</text><text x="22" y="108" fill="#ccc" font-size="14">Ollama · Docker edition</text><text x="22" y="133" fill="#ccc" font-size="14">llama.cpp · Desktop</text></g>
+    <g transform="translate(1104 217)"><rect width="208" height="170" rx="20" fill="#303030" stroke="#484848"/><text x="22" y="42" fill="#aaa" font-size="13" font-weight="700">РЕЗУЛЬТАТ</text><text x="22" y="78" fill="#f0f0f0" font-size="19" font-weight="700">Ответ</text><text x="22" y="108" fill="#ccc" font-size="14">Источники · XLSX</text><text x="22" y="133" fill="#ccc" font-size="14">Код · защищённый файл</text></g>
+  </g>
+  <g transform="translate(1185 64)" font-family="Segoe UI, Arial, sans-serif"><rect width="165" height="42" rx="21" fill="#ececec"/><circle cx="24" cy="21" r="8" fill="#171717"/><path d="m24 16 5 5-5 5-5-5Z" fill="#ececec"/><text x="44" y="27" fill="#171717" font-size="14" font-weight="700">NO CLOUD API</text></g>
+</svg>

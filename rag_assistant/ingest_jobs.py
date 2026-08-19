@@ -102,4 +102,3 @@ class IngestJobManager:
             finally:
                 with self._lock:
                     self._active_hashes.pop(job.sha256, None)
-
